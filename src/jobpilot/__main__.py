@@ -1,0 +1,90 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+import sys
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+from .config import Config
+from .db import Database
+from .hh.scheduler import schedule_hh
+from .tg.bot import build_dispatcher, create_bot
+from .tg.notifier import Notifier
+from .tg.userbot import make_client, start_listening
+
+
+def login() -> None:
+    """One-off interactive sign-in of the userbot account (asks for phone and code)."""
+    cfg = Config.from_env(need_bot=False)
+    client = make_client(cfg)
+    client.start()
+    print("Session saved to", cfg.session_path)
+    client.disconnect()
+
+
+async def run() -> None:
+    cfg = Config.from_env()
+    db = Database(cfg.db_path)
+    bot = create_bot(cfg.bot_token)
+    notifier = Notifier(bot, cfg.owner_id, db)
+
+    scheduler = AsyncIOScheduler(timezone=cfg.tz)
+
+    def schedule_digest(hhmm: str) -> None:
+        hour, minute = hhmm.split(":")
+        scheduler.add_job(
+            notifier.send_digest, "cron", hour=int(hour), minute=int(minute),
+            id="digest", replace_existing=True,
+        )
+
+    schedule_digest(db.get("digest_time"))
+    scheduler.start()
+
+    dp = build_dispatcher(db, notifier, cfg.owner_id, schedule_digest)
+    client = make_client(cfg)
+    await client.connect()
+    if not await client.is_user_authorized():
+        raise SystemExit("Userbot is not signed in. Run: jobpilot login")
+    refresh_task = await start_listening(client, cfg, db, notifier)  # keep a reference while running
+    schedule_hh(scheduler, cfg, db, notifier)
+
+    await asyncio.gather(dp.start_polling(bot), client.run_until_disconnected())
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    command = sys.argv[1] if len(sys.argv) > 1 else "run"
+    if command == "login":
+        login()
+    elif command == "run":
+        asyncio.run(run())
+    elif command in ("hh-login", "hh-search", "hh-run", "hh-dump", "hh-remind", "hh-export", "hh-refresh"):
+        from .hh import cli
+
+        if len(sys.argv) < 3:
+            raise SystemExit(f"Usage: jobpilot {command} <account>" + (" [--live] [--any-time]" if command == "hh-run" else " [--live] [--days N]" if command == "hh-remind" else ""))
+        account = sys.argv[2]
+        if command == "hh-login":
+            cli.login(account)
+        elif command == "hh-dump":
+            if len(sys.argv) < 4:
+                raise SystemExit("Usage: jobpilot hh-dump <account> <vacancy-url>")
+            cli.dump(account, sys.argv[3])
+        elif command == "hh-refresh":
+            cli.refresh(account)
+        elif command == "hh-export":
+            cli.export(account)
+        elif command == "hh-remind":
+            days = int(sys.argv[sys.argv.index("--days") + 1]) if "--days" in sys.argv else 2
+            cli.remind(account, live="--live" in sys.argv[3:], after_days=days)
+        elif command == "hh-search":
+            cli.search_only(account)
+        else:
+            cli.run(account, live="--live" in sys.argv[3:], any_time="--any-time" in sys.argv[3:])
+    else:
+        raise SystemExit("Usage: jobpilot [run|login|hh-login|hh-search|hh-run|hh-remind|hh-export|hh-refresh|hh-dump] [account]")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,26 @@
+# Copy to accounts.toml. `resumes` values must match the resume titles on hh.ru exactly.
+# A vacancy gets a response only if its title or snippet contains an `include` word and none of
+# the `exclude` words. Words match whole words, case-insensitively, "ё" equals "е".
+
+[[account]]
+name = "php"
+queries = ["PHP backend", "PHP developer", "Laravel", "Symfony"]
+resumes = { ru = "PHP-разработчик", en = "PHP Developer" }
+include = ["php"]
+exclude = ["стажер", "джуниор", "джун", "junior", "intern", "trainee"]
+start_limit = 20
+max_limit = 40
+ramp_step = 5
+# extra hh search params; remote-only by default, drop it if you also accept relocation
+search_params = { work_format = "REMOTE" }
+
+[[account]]
+name = "go"
+queries = ["Go developer", "Golang", "Go backend", "PHP backend"]
+resumes = { ru = "Go-разработчик", en = "Go Developer" }
+include = ["go", "golang", "go lang", "php"]
+exclude = ["стажер", "джуниор", "джун", "junior", "intern", "trainee"]
+start_limit = 20
+max_limit = 40
+ramp_step = 5
+search_params = { work_format = "REMOTE" }

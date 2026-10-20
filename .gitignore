@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+accounts.toml
+*.session
+*.session-journal
+.pytest_cache/
+*.egg-info/
+
+# runtime data stays out of git; letter examples are kept
+data/*
+!data/.gitkeep
+!data/letters/
+data/letters/*
+!data/letters/.gitkeep
+!data/letters/*.example.txt
