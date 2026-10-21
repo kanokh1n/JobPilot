@@ -11,7 +11,7 @@ from .accounts import load_accounts
 from .apply import HHBrowser, login_interactive
 from .dump import dump_pages
 from .followup import refresh_resumes, remind_pass
-from .pipeline import apply_pass
+from .pipeline import apply_pass, reject_reason
 from .search import WebSearch
 
 
@@ -45,7 +45,7 @@ def search_only(name: str) -> None:
         async with HHBrowser(profile_dir(cfg, name), cfg.data_dir / "screenshots") as browser:
             search = WebSearch(browser)
             for query in account.queries:
-                found = await search.search(query, params=account.search_params)
+                found = await search.search(query, params=account.search_params, period_days=account.search_period)
                 print(f"{query!r}: {len(found)} vacancies")
                 for vacancy in found[:5]:
                     print("  ", vacancy.name, "|", vacancy.employer, "|", vacancy.url)
@@ -103,5 +103,36 @@ def refresh(name: str) -> None:
     async def go() -> None:
         async with HHBrowser(profile_dir(cfg, name), cfg.data_dir / "screenshots") as browser:
             print("resumes raised:", await refresh_resumes(browser))
+
+    asyncio.run(go())
+
+
+def explain(name: str) -> None:
+    """Search like a real pass (ignoring what the database has seen) and say why each vacancy is taken or not."""
+    cfg, account = _setup(name)
+
+    async def go() -> None:
+        async with HHBrowser(profile_dir(cfg, name), cfg.data_dir / "screenshots") as browser:
+            search = WebSearch(browser)
+            unique = {}
+            for query in account.queries:
+                found = await search.search(query, params=account.search_params, period_days=account.search_period)
+                print(f"query {query!r}: {len(found)} found")
+                for vacancy in found:
+                    unique.setdefault(vacancy.id, vacancy)
+        taken, reasons = [], {}
+        for vacancy in unique.values():
+            reason = "has a test" if vacancy.has_test else reject_reason(account, vacancy)
+            if reason is None:
+                taken.append(vacancy)
+            else:
+                reasons.setdefault(reason, []).append(vacancy)
+        print(f"\nunique vacancies: {len(unique)}, taken: {len(taken)}")
+        for vacancy in taken:
+            print("  TAKE", vacancy.name, "|", vacancy.employer)
+        for reason, items in sorted(reasons.items(), key=lambda kv: -len(kv[1])):
+            print(f"\nskipped, {reason}: {len(items)}")
+            for vacancy in items[:8]:
+                print("  ", vacancy.name, "|", vacancy.employer)
 
     asyncio.run(go())

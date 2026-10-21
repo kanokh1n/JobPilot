@@ -7,10 +7,11 @@ from zoneinfo import ZoneInfo
 from jobpilot.db import Database
 from jobpilot.hh.accounts import load_accounts
 from jobpilot.hh.apply import ApplyResult
-from jobpilot.hh.limits import can_apply, daily_limit, pause_seconds
+from jobpilot.hh.apply import CaptchaError
+from jobpilot.hh.limits import can_apply, captcha_cooldown_hours, daily_limit, pause_seconds
 from jobpilot.hh.models import Account, Vacancy
 from jobpilot.hh.letter import load_template, render_letter
-from jobpilot.hh.pipeline import apply_pass, matches
+from jobpilot.hh.pipeline import apply_pass, captcha_hold, clear_captcha, matches
 from jobpilot.hh.search import parse_vacancy
 
 ITEM = {
@@ -58,7 +59,7 @@ def test_can_apply_respects_hours_and_limit():
 
 
 def test_pause_is_human_like():
-    assert all(60 <= pause_seconds(random.Random(i)) <= 240 for i in range(20))
+    assert all(60 <= pause_seconds(random.Random(i)) <= 180 for i in range(20))
 
 
 def test_reminders_only_for_old_unanswered(tmp_path):
@@ -75,10 +76,13 @@ def test_reminders_only_for_old_unanswered(tmp_path):
 
 
 class FakeSearch:
-    def __init__(self, vacancies):
+    def __init__(self, vacancies, captcha=False):
         self._vacancies = vacancies
+        self._captcha = captcha
 
-    async def search(self, text, params=None):
+    async def search(self, text, params=None, period_days=1):
+        if self._captcha:
+            raise CaptchaError("search")
         return self._vacancies
 
 
@@ -118,7 +122,7 @@ def test_letter_template_per_account_overrides_shared(tmp_path):
     assert render_letter(template, vacancy(1, "Go dev")) == "go Go dev at E"
 
 
-def _run(tmp_path, db, vacancies, browser, live=True, notify=print):
+def _run(tmp_path, db, vacancies, browser, live=True, notify=print, account=ACCOUNT, search=None, now=NOON):
     (tmp_path / "ru.txt").write_text("Здравствуйте, {vacancy}", encoding="utf-8")
     (tmp_path / "en.txt").write_text("Hello, {vacancy}", encoding="utf-8")
 
@@ -126,8 +130,8 @@ def _run(tmp_path, db, vacancies, browser, live=True, notify=print):
         return None
 
     return asyncio.run(apply_pass(
-        db=db, account=ACCOUNT, search=FakeSearch(vacancies), browser=browser,
-        letters_dir=tmp_path, tz=TZ, live=live, sleep=no_sleep, now=NOON, notify=notify,
+        db=db, account=account, search=search or FakeSearch(vacancies), browser=browser,
+        letters_dir=tmp_path, tz=TZ, live=live, sleep=no_sleep, now=now, notify=notify,
     ))
 
 
@@ -157,6 +161,40 @@ def test_captcha_stops_the_account(tmp_path):
     browser = FakeBrowser([ApplyResult.CAPTCHA, ApplyResult.APPLIED])
     summary = _run(tmp_path, db, _vacancies(3), browser, notify=messages.append)
     assert summary.stopped == "captcha" and len(browser.calls) == 1 and messages
+    assert not db.hh_seen("go", "0")  # the vacancy is tried again after the cooldown
+    until = captcha_hold(db, NOON)
+    assert until == NOON + timedelta(hours=3)
+    assert captcha_hold(db, NOON + timedelta(hours=4)) is None
+
+
+def test_captcha_cooldown_grows_and_a_success_resets_it(tmp_path):
+    db = Database(tmp_path / "t.db")
+    assert [captcha_cooldown_hours(n) for n in (1, 2, 3, 9)] == [3, 12, 24, 24]
+    _run(tmp_path, db, [], None, search=FakeSearch([], captcha=True), notify=lambda m: None)
+    later = NOON + timedelta(hours=4)
+    _run(tmp_path, db, [], None, search=FakeSearch([], captcha=True), notify=lambda m: None, now=later)
+    assert captcha_hold(db, later) == later + timedelta(hours=12)
+    clear_captcha(db)
+    assert captcha_hold(db, later) is None
+    _run(tmp_path, db, _vacancies(1), FakeBrowser([ApplyResult.APPLIED]), now=later)
+    assert db.get("hh_captcha_strikes") == "0"
+
+
+def test_captcha_on_search_page_stops_before_any_application(tmp_path):
+    db = Database(tmp_path / "t.db")
+    browser = FakeBrowser([])
+    summary = _run(tmp_path, db, _vacancies(3), browser, search=FakeSearch([], captcha=True), notify=lambda m: None)
+    assert summary.stopped == "captcha" and browser.calls == [] and captcha_hold(db, NOON)
+
+
+def test_per_pass_limit_spreads_the_day(tmp_path):
+    from dataclasses import replace
+
+    db = Database(tmp_path / "t.db")
+    account = replace(ACCOUNT, start_limit=10, max_limit=10, per_pass=3)
+    browser = FakeBrowser([ApplyResult.APPLIED] * 5)
+    summary = _run(tmp_path, db, _vacancies(5), browser, account=account)
+    assert summary.applied == 3 and summary.stopped == "per-pass limit"
 
 
 def test_three_failures_in_a_row_stop_but_a_success_resets(tmp_path):
@@ -182,3 +220,16 @@ def test_other_account_applying_blocks_the_same_vacancy(tmp_path):
     browser = FakeBrowser([ApplyResult.APPLIED])
     summary = _run(tmp_path, db, [vacancy(0, "Go dev"), vacancy(1, "Go dev 2")], browser)
     assert [c[0] for c in browser.calls] == ["1"] and summary.applied == 1
+
+
+def test_blocked_employer_is_skipped_whatever_the_vacancy():
+    from dataclasses import replace
+    from jobpilot.hh.pipeline import matches
+
+    account = replace(ACCOUNT, include=("go",), exclude_employers=("озон", "Evrone", "vk"))
+    vacancy = lambda employer: Vacancy(id="1", name="Go developer", employer=employer, url="u", snippet="", published_at="")
+    assert matches(account, vacancy("Ozon Tech")) is True
+    assert matches(account, vacancy("Озон Банк")) is False
+    assert matches(account, vacancy("evrone.ru")) is False
+    assert matches(account, vacancy("VK Play")) is False
+    assert matches(account, vacancy("Vkusno Tech")) is True

@@ -40,6 +40,16 @@ async def resolve_source_ids(client: TelegramClient, cfg: Config) -> set[int]:
     return ids
 
 
+async def source_titles(client: TelegramClient, cfg: Config) -> list[str]:
+    """Names of the chats being listened to; an id is shown when the chat is not among the dialogs."""
+    ids = await resolve_source_ids(client, cfg)
+    names: dict[int, str] = {}
+    async for dialog in client.iter_dialogs():
+        if dialog.id in ids:
+            names[dialog.id] = dialog.name or str(dialog.id)
+    return sorted(names.values(), key=str.lower) + [str(i) for i in sorted(ids - names.keys())]
+
+
 def post_url(event: events.NewMessage.Event) -> str:
     username = getattr(event.chat, "username", None)
     if username:

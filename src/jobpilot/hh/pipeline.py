@@ -4,15 +4,15 @@ import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from ..db import Database
-from ..filters import Filters
-from .apply import ApplyResult
+from ..filters import Filters, _has_word
+from .apply import ApplyResult, CaptchaError
 from .letter import load_template, render_letter
-from .limits import can_apply, daily_limit, pause_seconds
+from .limits import can_apply, captcha_cooldown_hours, daily_limit, pause_seconds, short_pause_seconds
 from .models import Account, Vacancy
 
 log = logging.getLogger(__name__)
@@ -31,15 +31,60 @@ def account_filters(account: Account) -> Filters:
     return Filters(include=list(account.include), exclude=list(account.exclude), require_marker=False, min_length=0)
 
 
+def reject_reason(account: Account, vacancy: Vacancy) -> str | None:
+    """Why the vacancy is not taken (None when it is): blocked employer, excluded word or no include word.
+
+    Words are checked on the title and the snippet hh returns with the search result; employer names
+    match as whole words, so "vk" blocks "VK Play" but not "Vkusno".
+    """
+    for name in account.exclude_employers:
+        if _has_word(vacancy.employer, name):
+            return f"employer {name!r}"
+    text = f"{vacancy.name}\n{vacancy.snippet}"
+    for word in account.exclude:
+        if _has_word(text, word):
+            return f"excluded word {word!r}"
+    if account.include and not any(_has_word(text, word) for word in account.include):
+        return "no include word in title/snippet"
+    return None
+
+
 def matches(account: Account, vacancy: Vacancy) -> bool:
-    """Keyword check on the title and the snippet hh returns with the search result."""
-    return account_filters(account).match(f"{vacancy.name}\n{vacancy.snippet}")
+    return reject_reason(account, vacancy) is None
+
+
+# One server IP serves both accounts, so a captcha on either one puts all of hh on hold.
+CAPTCHA_UNTIL = "hh_captcha_until"
+CAPTCHA_STRIKES = "hh_captcha_strikes"
+
+
+def captcha_hold(db: Database, now: datetime) -> datetime | None:
+    """End of the current captcha cooldown, or None when hh may be used."""
+    until = db.get(CAPTCHA_UNTIL)
+    if not until:
+        return None
+    until_at = datetime.fromisoformat(until)
+    return until_at if now < until_at else None
+
+
+def record_captcha(db: Database, now: datetime) -> tuple[int, datetime]:
+    """Start a cooldown that grows with every captcha in a row; returns (strikes, cooldown end)."""
+    strikes = int(db.get(CAPTCHA_STRIKES, "0")) + 1
+    until = now + timedelta(hours=captcha_cooldown_hours(strikes))
+    db.set(CAPTCHA_STRIKES, str(strikes))
+    db.set(CAPTCHA_UNTIL, until.isoformat())
+    return strikes, until
+
+
+def clear_captcha(db: Database) -> None:
+    db.set(CAPTCHA_STRIKES, "0")
+    db.set(CAPTCHA_UNTIL, "")
 
 
 async def collect_candidates(search, account: Account, db: Database) -> list[Vacancy]:
     unique: dict[str, Vacancy] = {}
     for query in account.queries:
-        for vacancy in await search.search(query, params=account.search_params):
+        for vacancy in await search.search(query, params=account.search_params, period_days=account.search_period):
             unique.setdefault(vacancy.id, vacancy)
     return [v for v in unique.values() if not v.has_test and not db.hh_seen_any(v.id)]
 
@@ -59,7 +104,20 @@ async def apply_pass(
     summary = Summary()
     streak = 0  # consecutive failures
 
-    for vacancy in await collect_candidates(search, account, db):
+    def on_captcha() -> Summary:
+        strikes, until = record_captcha(db, local_now)
+        summary.stopped = "captcha"
+        notify(f"hh/{account.name}: hh показал капчу. Оба аккаунта стоят до "
+               f"{until.astimezone(ZoneInfo(tz)):%d.%m %H:%M} (капча {strikes} раз подряд). "
+               f"Снять паузу раньше: /hh_resume")
+        return summary
+
+    try:
+        candidates = await collect_candidates(search, account, db)
+    except CaptchaError:
+        return on_captcha()
+
+    for vacancy in candidates:
         if not matches(account, vacancy):
             db.hh_record(account.name, vacancy.id, vacancy.name, vacancy.employer, vacancy.url, lang, "", "skipped")
             summary.skipped += 1
@@ -67,23 +125,27 @@ async def apply_pass(
         if not can_apply(local_now, done_today + summary.applied, limit):
             summary.stopped = "daily limit or outside working hours"
             break
+        if summary.applied >= account.per_pass:
+            summary.stopped = "per-pass limit"
+            break
         letter = render_letter(template, vacancy)
         if not live:
             summary.lines.append(f"[dry run] {vacancy.name} ({vacancy.employer}) {vacancy.url}")
             summary.applied += 1
             continue
         result = await browser.apply(vacancy, account.resumes[lang], letter)
-        db.hh_record(account.name, vacancy.id, vacancy.name, vacancy.employer, vacancy.url, lang, letter, result.value)
         if result is ApplyResult.CAPTCHA:
-            summary.stopped = "captcha"
-            notify(f"hh/{account.name}: captcha, pausing this account")
-            break
+            return on_captcha()  # not recorded: the vacancy is tried again after the cooldown
+        db.hh_record(account.name, vacancy.id, vacancy.name, vacancy.employer, vacancy.url, lang, letter, result.value)
         if result is ApplyResult.APPLIED:
             summary.applied += 1
             streak = 0
-            if done_today + summary.applied < limit:
+            clear_captcha(db)
+            if done_today + summary.applied < limit and summary.applied < account.per_pass:
                 await sleep(pause_seconds())
-        elif result is ApplyResult.FAILED:
+            continue
+        await sleep(short_pause_seconds())  # opening vacancy pages back to back also looks like a bot
+        if result is ApplyResult.FAILED:
             summary.failed += 1
             streak += 1
             if streak >= 3:

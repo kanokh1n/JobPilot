@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from telethon.tl.types import InputPeerChannel, InputPeerChat
 
 from jobpilot.config import Config
-from jobpilot.tg.userbot import resolve_source_ids
+from jobpilot.tg.userbot import resolve_source_ids, source_titles
 
 
 class FakeClient:
@@ -51,3 +51,13 @@ def test_explicit_sources_and_unknown_ones():
 
 def test_missing_folder_gives_no_sources():
     assert asyncio.run(resolve_source_ids(FakeClient([], {}), cfg(folder="Вакансии"))) == set()
+
+
+def test_source_titles_lists_names_and_ids_of_unknown_chats():
+    class Client(FakeClient):
+        async def iter_dialogs(self):
+            for dialog in (SimpleNamespace(id=-7, name="Remote jobs"), SimpleNamespace(id=-99, name="Other")):
+                yield dialog
+
+    client = Client([folder("Вакансии", InputPeerChat(7), InputPeerChat(8))], {})
+    assert asyncio.run(source_titles(client, cfg(folder="Вакансии"))) == ["Remote jobs", "-8"]

@@ -26,6 +26,10 @@ class ApplyResult(str, Enum):
     FAILED = "failed"
 
 
+class CaptchaError(Exception):
+    """hh showed a captcha instead of the page: stop touching hh with this session."""
+
+
 class HHBrowser:
     """One persistent Chromium profile per hh account, so the login survives restarts."""
 
@@ -36,6 +40,7 @@ class HHBrowser:
         self._headless = headless
         self._pw = None
         self.context: BrowserContext | None = None
+        self.last_captcha_shot: Path | None = None  # screenshot of the last captcha seen, for Telegram
 
     async def __aenter__(self) -> "HHBrowser":
         self._profile_dir.mkdir(parents=True, exist_ok=True)
@@ -61,6 +66,20 @@ class HHBrowser:
         path.chmod(0o600)
         return path
 
+    async def has_captcha(self, page: Page, label: str) -> bool:
+        """True when the page is a captcha; keeps a screenshot and the HTML so the selector can be checked."""
+        if not await page.locator(sel.CAPTCHA).count():
+            return False
+        shot = self._screenshots_dir / f"captcha_{label}.png"
+        try:
+            await page.screenshot(path=str(shot))
+            shot.with_suffix(".html").write_text(await page.content(), encoding="utf-8")
+            self.last_captcha_shot = shot
+        except Exception:
+            log.exception("could not save the captcha page %s", page.url)
+        log.warning("captcha on %s", page.url)
+        return True
+
     async def is_logged_in(self, page: Page) -> bool:
         await page.goto("https://hh.ru/applicant/resumes", wait_until="domcontentloaded")
         await page.wait_for_timeout(3000)
@@ -71,7 +90,7 @@ class HHBrowser:
         page = await self.context.new_page()
         try:
             await page.goto(vacancy.url, wait_until="domcontentloaded")
-            if await page.locator(sel.CAPTCHA).count():
+            if await self.has_captcha(page, vacancy.id):
                 return ApplyResult.CAPTCHA
             # An applied vacancy shows "again"/"view topic" instead of the respond button.
             if not await page.locator(sel.RESPOND_BUTTON).count():
@@ -91,6 +110,8 @@ class HHBrowser:
                     await page.get_by_role("button", name=sel.ADD_LETTER).click()
                     await page.wait_for_selector(sel.LETTER_INPUT, timeout=5_000)
             except PlaywrightTimeout:
+                if await self.has_captcha(page, vacancy.id):
+                    return ApplyResult.CAPTCHA
                 if "test" in page.url:
                     return ApplyResult.NEEDS_TEST
                 # No letter window: do not guess that the response went out, check the vacancy page.
@@ -108,7 +129,7 @@ class HHBrowser:
             await page.fill(sel.LETTER_INPUT, letter)
             await page.locator(sel.SUBMIT_BUTTON).first.click()
             await page.wait_for_timeout(2500)
-            if await page.locator(sel.CAPTCHA).count():
+            if await self.has_captcha(page, vacancy.id):
                 return ApplyResult.CAPTCHA
             if await page.locator(sel.LETTER_INPUT).count():
                 return ApplyResult.NEEDS_TEST  # the popup is still open: hh wants something more (test, questions)

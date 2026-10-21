@@ -8,9 +8,12 @@ queries = ["PHP backend", "PHP developer", "Laravel", "Symfony"]
 resumes = { ru = "PHP-разработчик", en = "PHP Developer" }
 include = ["php"]
 exclude = ["стажер", "джуниор", "джун", "junior", "intern", "trainee"]
+# Companies to skip: a vacancy is dropped if the employer name contains any of these (case-insensitive).
+exclude_employers = []
 start_limit = 20
 max_limit = 40
 ramp_step = 5
+per_pass = 8  # applications per hourly pass, so the day's quota is spread out
 # extra hh search params; remote-only by default, drop it if you also accept relocation
 search_params = { work_format = "REMOTE" }
 
@@ -23,4 +26,5 @@ exclude = ["стажер", "джуниор", "джун", "junior", "intern", "tr
 start_limit = 20
 max_limit = 40
 ramp_step = 5
+per_pass = 8  # applications per hourly pass, so the day's quota is spread out
 search_params = { work_format = "REMOTE" }

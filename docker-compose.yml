@@ -7,3 +7,4 @@ services:
       DATA_DIR: /app/data
     volumes:
       - ./data:/app/data
+      - ./accounts.toml:/app/accounts.toml:ro

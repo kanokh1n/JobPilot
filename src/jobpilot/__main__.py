@@ -11,7 +11,7 @@ from .db import Database
 from .hh.scheduler import schedule_hh
 from .tg.bot import build_dispatcher, create_bot
 from .tg.notifier import Notifier
-from .tg.userbot import make_client, start_listening
+from .tg.userbot import make_client, source_titles, start_listening
 
 
 def login() -> None:
@@ -41,8 +41,8 @@ async def run() -> None:
     schedule_digest(db.get("digest_time"))
     scheduler.start()
 
-    dp = build_dispatcher(db, notifier, cfg.owner_id, schedule_digest)
     client = make_client(cfg)
+    dp = build_dispatcher(db, notifier, cfg.owner_id, schedule_digest, lambda: source_titles(client, cfg))
     await client.connect()
     if not await client.is_user_authorized():
         raise SystemExit("Userbot is not signed in. Run: jobpilot login")
@@ -59,7 +59,11 @@ def main() -> None:
         login()
     elif command == "run":
         asyncio.run(run())
-    elif command in ("hh-login", "hh-search", "hh-run", "hh-dump", "hh-remind", "hh-export", "hh-refresh"):
+    elif command == "db-info":
+        from .core.info import main as db_info
+
+        db_info()
+    elif command in ("hh-login", "hh-search", "hh-run", "hh-dump", "hh-remind", "hh-export", "hh-refresh", "hh-explain"):
         from .hh import cli
 
         if len(sys.argv) < 3:
@@ -71,6 +75,8 @@ def main() -> None:
             if len(sys.argv) < 4:
                 raise SystemExit("Usage: jobpilot hh-dump <account> <vacancy-url>")
             cli.dump(account, sys.argv[3])
+        elif command == "hh-explain":
+            cli.explain(account)
         elif command == "hh-refresh":
             cli.refresh(account)
         elif command == "hh-export":
@@ -83,7 +89,7 @@ def main() -> None:
         else:
             cli.run(account, live="--live" in sys.argv[3:], any_time="--any-time" in sys.argv[3:])
     else:
-        raise SystemExit("Usage: jobpilot [run|login|hh-login|hh-search|hh-run|hh-remind|hh-export|hh-refresh|hh-dump] [account]")
+        raise SystemExit("Usage: jobpilot [run|login|db-info|hh-login|hh-search|hh-run|hh-remind|hh-export|hh-refresh|hh-explain|hh-dump] [account]")
 
 
 if __name__ == "__main__":

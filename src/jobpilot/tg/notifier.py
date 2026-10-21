@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from aiogram import Bot
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
+from pathlib import Path
+
+from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
 
 from ..db import Database, Post
 
@@ -50,6 +52,9 @@ class Notifier:
 
     async def say(self, text: str) -> None:
         await self._bot.send_message(self._owner_id, text)
+
+    async def say_photo(self, path: Path, caption: str) -> None:
+        await self._bot.send_photo(self._owner_id, FSInputFile(path), caption=caption[:1000])
 
     async def send_post(self, post: Post) -> None:
         await self._bot.send_message(

@@ -89,6 +89,7 @@ async def remind_pass(db: Database, browser: HHBrowser, account: str, live: bool
                       notify=print, sleep=asyncio.sleep, after_days: int = 2) -> int:
     """Nudge employers who have not reacted to an application older than `after_days`."""
     states = await scan_negotiations(browser)
+    db.hh_sync_states(account, states)
     sent = 0
     for row in reminders_due(db, account, after_days=after_days):
         state = states.get(row["vacancy_id"])

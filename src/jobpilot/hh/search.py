@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import html
 import logging
 import re
@@ -7,6 +8,8 @@ from urllib.parse import urlencode
 
 import httpx
 
+from .apply import CaptchaError
+from .limits import short_pause_seconds
 from .models import Vacancy
 
 log = logging.getLogger(__name__)
@@ -67,8 +70,9 @@ class WebSearch:
 
     ID_RE = re.compile(r"/vacancy/(\d+)")
 
-    def __init__(self, browser) -> None:
+    def __init__(self, browser, sleep=asyncio.sleep) -> None:
         self._browser = browser
+        self._sleep = sleep
 
     async def search(self, text: str, params: dict[str, str] | None = None,
                      period_days: int = 1, max_pages: int = 3) -> list[Vacancy]:
@@ -76,12 +80,15 @@ class WebSearch:
         page = await self._browser.context.new_page()
         try:
             for number in range(max_pages):
+                await self._sleep(short_pause_seconds())  # hh flags bursts of page loads
                 query = {
                     "text": text, "search_period": period_days, "items_on_page": 50,
                     "page": number, "order_by": "publication_time", **(params or {}),
                 }
                 await page.goto("https://hh.ru/search/vacancy?" + urlencode(query),
                                 wait_until="domcontentloaded", timeout=90_000)
+                if await self._browser.has_captcha(page, "search"):
+                    raise CaptchaError(page.url)
                 try:
                     await page.wait_for_selector('[data-qa="vacancy-serp__vacancy"]', timeout=15_000)
                 except Exception:

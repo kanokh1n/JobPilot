@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from datetime import datetime, timezone
+from collections.abc import Awaitable, Callable
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import Command, CommandObject
@@ -9,6 +10,7 @@ from aiogram.types import CallbackQuery, Message
 
 from ..db import Database
 from ..filters import split_keywords
+from ..hh.pipeline import captcha_hold, clear_captcha
 from .notifier import Notifier
 
 HELP = (
@@ -19,7 +21,9 @@ HELP = (
     "/digest_time 09:00: время дайджеста\n"
     "/digest: прислать накопленное сейчас\n"
     "/resume ru|en: какое резюме использовать для откликов на hh\n"
+    "/sources: какие чаты и каналы слушает юзербот\n"
     "/pause и /unpause: остановить и возобновить\n"
+    "/hh_resume: снять паузу hh после капчи раньше срока\n"
     "/status: сколько вакансий накоплено"
 )
 
@@ -29,6 +33,7 @@ def build_dispatcher(
     notifier: Notifier,
     owner_id: int,
     reschedule: Callable[[str], None],
+    list_sources: Callable[[], Awaitable[list[str]]] | None = None,
 ) -> Dispatcher:
     router = Router()
     router.message.filter(F.from_user.id == owner_id)
@@ -91,6 +96,21 @@ def build_dispatcher(
         db.set("resume_lang", value)
         await message.answer(f"Для откликов теперь резюме: {value}")
 
+    @router.message(Command("sources"))
+    async def sources(message: Message) -> None:
+        if list_sources is None:
+            await message.answer("Список источников недоступен.")
+            return
+        names = await list_sources()
+        lines = [f"Слушаю источников: {len(names)}"] + [f"- {name}" for name in names]
+        chunk = ""
+        for line in lines:
+            if len(chunk) + len(line) + 1 > 3800:  # Telegram limits a message to 4096 characters
+                await message.answer(chunk)
+                chunk = ""
+            chunk += line + "\n"
+        await message.answer(chunk)
+
     @router.message(Command("pause"))
     async def pause(message: Message) -> None:
         db.set("paused", "1")
@@ -100,6 +120,14 @@ def build_dispatcher(
     async def unpause(message: Message) -> None:
         db.set("paused", "0")
         await message.answer("Снова работаю.")
+
+    @router.message(Command("hh_resume"))
+    async def hh_resume(message: Message) -> None:
+        if not captcha_hold(db, datetime.now(timezone.utc)):
+            await message.answer("hh не на паузе из-за капчи.")
+            return
+        clear_captcha(db)
+        await message.answer("Пауза hh снята, следующий проход по расписанию. Если капча повторится, пауза снова включится.")
 
     @router.message(Command("status"))
     async def status(message: Message) -> None:

@@ -22,4 +22,17 @@ def can_apply(now: datetime, applied_today: int, limit: int) -> bool:
 
 def pause_seconds(rng: random.Random | None = None) -> float:
     """Human-like gap between two applications."""
-    return (rng or random).uniform(60, 240)
+    return (rng or random).uniform(60, 180)
+
+
+def short_pause_seconds(rng: random.Random | None = None) -> float:
+    """Gap after a page that did not end in an application, and between two search pages."""
+    return (rng or random).uniform(8, 25)
+
+
+CAPTCHA_COOLDOWN_HOURS = (3, 12, 24)  # 1st, 2nd, 3rd and later captcha in a row
+
+
+def captcha_cooldown_hours(strikes: int) -> int:
+    """How long every account stays off hh after the `strikes`-th captcha in a row (1-based)."""
+    return CAPTCHA_COOLDOWN_HOURS[min(max(strikes, 1), len(CAPTCHA_COOLDOWN_HOURS)) - 1]
