@@ -47,11 +47,31 @@ def test_parse_rss_wordpress_and_atom():
     assert first.published_at == "2026-10-22T08:00:00+00:00"
 
     wp = parse(WORDPRESS).items[0]
-    assert wp.company == "Nordeus" and wp.categories == ["Golang", "Beograd"] and wp.summary == "Full text"
+    # dc:creator is the person who posted it on WordPress, not the employer
+    assert wp.company == "" and wp.categories == ["Golang", "Beograd"] and wp.summary == "Full text"
 
     atom = parse(ATOM).items[0]
     assert (atom.title, atom.url, atom.company, atom.published_at) == (
         "Go Developer", "https://ex.com/j/1", "Vega IT", "2026-10-20T09:00:00+00:00")
+
+
+REAL_TITLES = b"""<rss version="2.0"><channel><title>t</title>
+<item><title>Platform Automation Engineer | Belgrade or Warsaw, hybrid</title>
+<link>https://www.helloworld.rs/posao/Platform-Automation-Engineer/IGT-DB-d.o.o/763539?utm_source=last_jobs&amp;utm_medium=rss</link></item>
+<item><title>Planer proizvodnje</title>
+<link>http://poslovi.infostud.com/posao/Beohemija_d.o.o.-Zrenjanin/Beohemija_d.o.o./763616?utm_source=poslovi.infostud.com</link></item>
+<item><title>Senior Software Engineer | Audio Infotainment Platform</title>
+<link>https://startit.rs/poslovi/senior-software-engineer-audio-infotainment-platform/</link></item>
+</channel></rss>"""
+
+
+def test_company_comes_from_the_link_and_a_bar_is_part_of_the_title():
+    """Shapes seen on the live feeds on 22.10.2026."""
+    hw, infostud, startit = parse(REAL_TITLES).items
+    assert (hw.title, hw.company) == ("Platform Automation Engineer | Belgrade or Warsaw, hybrid", "IGT DB d.o.o")
+    assert hw.url.endswith("utm_source=last_jobs&utm_medium=rss")
+    assert (infostud.title, infostud.company) == ("Planer proizvodnje", "Beohemija d.o.o.")
+    assert (startit.title, startit.company) == ("Senior Software Engineer | Audio Infotainment Platform", "")
 
 
 def test_parse_refuses_html_and_entities():
@@ -162,7 +182,7 @@ def test_round_skips_paused_disabled_and_dedupes_across_feeds(tmp_path):
         return httpx.Response(200, content=RSS)
 
     poller = _poller(db, handler, clock)
-    db.set(sources.OVERRIDES, json.dumps({"startit": {"enabled": False}, "infostud": {"url": "https://rss.infostud.com/x"}}))
+    db.set(sources.OVERRIDES, json.dumps({"startit": {"enabled": False}, "infostud": {"enabled": True, "url": "https://rss.infostud.com/x"}}))
 
     async def main():
         db.set(sources.PAUSED, "1")

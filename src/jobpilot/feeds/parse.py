@@ -9,6 +9,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from urllib.parse import unquote
 
 MAX_BYTES = 2 * 1024 * 1024
 SUMMARY_CHARS = 1500
@@ -86,15 +87,25 @@ def _date(value: str) -> str | None:
     return parsed.astimezone(timezone.utc).isoformat()
 
 
-_TITLE_COMPANY = re.compile(r"^(?P<title>.+?)\s+(?:[-–—|@]|u firmi|at)\s+(?P<company>[^-–—|@]{2,80})$")
+_TITLE_COMPANY = re.compile(r"^(?P<title>.+?)\s+(?:[-–—@]|at)\s+(?P<company>[^-–—|@]{2,80})$")
+# HelloWorld and Infostud put the employer into the link: /posao/<title or employer-city>/<Employer_name>/<id>
+_URL_COMPANY = re.compile(r"/posao/[^/?#]+/(?P<company>[^/?#]+)/\d+(?:[/?#]|$)")
 
 
 def _split_title(title: str) -> tuple[str, str]:
-    """Some job feeds write "Senior PHP Developer - Acme" or "... @ Acme" in the title."""
+    """Some job feeds write "Senior PHP Developer - Acme" or "... @ Acme" in the title. A "|" is not taken:
+    on HelloWorld and Startit it separates the title from a city or a team."""
     match = _TITLE_COMPANY.match(title)
     if match and len(match.group("title")) >= 4:
         return match.group("title").strip(), match.group("company").strip()
     return title, ""
+
+
+def _company_from_url(url: str) -> str:
+    match = _URL_COMPANY.search(url)
+    if not match:
+        return ""
+    return re.sub(r"[-_]+", " ", unquote(match.group("company"))).strip()
 
 
 def _item(el: ET.Element, atom: bool) -> FeedItem | None:
@@ -114,11 +125,15 @@ def _item(el: ET.Element, atom: bool) -> FeedItem | None:
         summary = _text(el, "encoded", "description")     # content:encoded first, it is the full text
         published = _text(el, "pubdate", "date")
         categories = ["".join(c.itertext()).strip() for c in _children(el, "category")]
-        company = _text(el, "company", "employer", "hiringorganization", "creator", "author")
+        # Not dc:creator / author: in WordPress feeds (Startit) that is the person who posted it.
+        company = _text(el, "company", "employer", "hiringorganization")
     location = _text(el, "location", "city", "joblocation")
     external_id = _text(el, "guid", "id") or url or title
     if not title or not (url or external_id):
         return None
+    url = html.unescape(url or "").strip()
+    if not company:
+        company = _company_from_url(url)
     if not company:
         title, company = _split_title(title)
     if company and "@" in company and " " not in company:   # an RSS <author> e-mail, not a company

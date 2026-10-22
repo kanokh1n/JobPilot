@@ -163,8 +163,8 @@ account's settings when it starts (the `hh-*` commands use them too). The bot co
 
 The worker reads the RSS feeds of job sites and keeps the vacancies in the table `feed_jobs` (database v5).
 Read-only: nothing is posted to the sites, you apply there by hand. Built in for Serbia: HelloWorld.rs
-(every 30 min), Startit Poslovi (every 6 h) and Poslovi Infostud, IT category (every hour; the address of
-the IT feed is not verified yet, fix it on the site if it shows an error). Each feed has a country, so other
+(every 30 min) and Startit Poslovi (every 6 h). Poslovi Infostud is in the list but off: its feed has no
+categories, only the 20 newest of all its ~12 000 jobs (IT ones of the group are on HelloWorld). Each feed has a country, so other
 countries are added the same way: on the "Ленты" page as `DE | Name | https://feed-url | minutes`.
 
 Politeness: one feed at a time with a few seconds between them, never more often than every 15 minutes

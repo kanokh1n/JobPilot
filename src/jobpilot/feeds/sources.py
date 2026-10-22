@@ -36,16 +36,16 @@ class Source:
     note: str = ""
 
 
-# Serbia (research 22.10.2026). HelloWorld: 20 latest, ttl 15 min, no category filter. Startit: ~10 posts,
-# curated, rarely changes. Infostud: 20 latest per chosen categories; the IT feed address is UNVERIFIED,
-# fix it on the site if the check shows an error.
+# Serbia (checked on the live feeds 22.10.2026). HelloWorld: ~15-20 latest IT jobs, ttl 15 min. Startit: ~10
+# posts, curated, rarely changes. Infostud has no category feeds (only "20 newest" of all ~12 000 jobs and a news
+# feed at /poslovi/94), so it is off by default: IT jobs of the Infostud group are on HelloWorld anyway.
 BUILTIN: tuple[Source, ...] = (
     Source("helloworld", "HelloWorld.rs", "RS", "https://www.helloworld.rs/rss", 30, builtin=True,
            note="20 последних IT-вакансий, обновляется каждые 15 минут"),
     Source("startit", "Startit Poslovi", "RS", "https://startit.rs/poslovi/feed/", 360, builtin=True,
            note="кураторская доска, 6–10 вакансий"),
-    Source("infostud", "Poslovi Infostud (IT)", "RS", "https://rss.infostud.com/poslovi/", 60, builtin=True,
-           note="адрес ленты категории IT не проверен; лента нельзя перепубликовать, только читать"),
+    Source("infostud", "Poslovi Infostud", "RS", "https://rss.infostud.com/poslovi/", 60, enabled=False,
+           builtin=True, note="20 новейших вакансий всех профессий, без фильтра по IT; IT-вакансии группы Infostud есть на HelloWorld"),
 )
 
 COUNTRIES = {"RS": "Сербия", "AM": "Армения", "ME": "Черногория", "DE": "Германия", "PL": "Польша",
