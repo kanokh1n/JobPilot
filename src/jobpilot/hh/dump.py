@@ -65,8 +65,8 @@ CHAT_URL = "https://hh.ru/chat"
 async def dump_chats(profile_dir: Path, out_dir: Path, open_chats: int = 0) -> None:
     """Save what the hh chat app loads: every JSON answer of its API (chatik.hh.ru) and the page itself.
 
-    The chat list is scrolled to load its next page. Read-only: nothing is typed or sent, but opening a
-    chat (`open_chats`) marks it as read on hh.
+    The chat list is scrolled to load its next page; websocket frames go to ws.txt. Read-only: nothing is
+    typed or sent, but opening a chat (`open_chats`) marks it as read on hh.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     async with HHBrowser(profile_dir, out_dir) as browser:
@@ -84,7 +84,15 @@ async def dump_chats(profile_dir: Path, out_dir: Path, open_chats: int = 0) -> N
             (out_dir / name).write_text(body, encoding="utf-8")
             urls.append(f"{name} {response.request.method} {response.url}")
 
+        frames: list[str] = []
+
+        def on_socket(ws) -> None:  # what the live chat watcher listens to (v8)
+            frames.append(f"open {ws.url}")
+            ws.on("framereceived", lambda payload: frames.append(f"in  {str(payload)[:600]!r}"))
+            ws.on("framesent", lambda payload: frames.append(f"out {str(payload)[:600]!r}"))
+
         page.on("response", keep)
+        page.on("websocket", on_socket)
         await page.goto(CHAT_URL, wait_until="domcontentloaded", timeout=90_000)
         await page.wait_for_timeout(6000)
         print("chat app url:", page.url.split("?")[0])
@@ -110,4 +118,5 @@ async def dump_chats(profile_dir: Path, out_dir: Path, open_chats: int = 0) -> N
             await page.wait_for_timeout(5000)
             await _save(page, out_dir, f"chat_{number}")
         (out_dir / "urls.txt").write_text("\n".join(urls) + "\n", encoding="utf-8")
-        print("api answers saved:", len(urls))
+        (out_dir / "ws.txt").write_text("\n".join(frames) + "\n", encoding="utf-8")
+        print("api answers saved:", len(urls), "websocket frames:", len(frames))

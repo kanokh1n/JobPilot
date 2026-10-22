@@ -55,6 +55,7 @@ class HHBrowser:
         self._pw = None
         self.context: BrowserContext | None = None
         self.last_captcha_shot: Path | None = None  # screenshot of the last captcha seen, for Telegram
+        self.closed = False  # Chromium went away (crash, out of memory): SharedBrowsers opens it again
 
     async def __aenter__(self) -> "HHBrowser":
         self._profile_dir.mkdir(parents=True, exist_ok=True)
@@ -64,13 +65,15 @@ class HHBrowser:
             str(self._profile_dir), headless=self._headless, locale="ru-RU",
             channel=os.environ.get("HH_BROWSER_CHANNEL") or None,  # e.g. "chrome" to use installed Chrome
         )
+        self.context.on("close", lambda *_: setattr(self, "closed", True))
         state = self._profile_dir / STATE_FILE
         if state.exists():  # cookies exported from another machine (the browser profile itself is not portable)
             await self.context.add_cookies(json.loads(state.read_text())["cookies"])
         return self
 
     async def __aexit__(self, *exc) -> None:
-        await self.context.close()
+        if not self.closed:
+            await self.context.close()
         await self._pw.stop()
 
     async def export_state(self) -> Path:

@@ -24,6 +24,7 @@ from ..core.db import Database
 from ..hh import accounts as hh_accounts
 from ..hh.accounts import load_accounts
 from ..hh.limits import daily_limit
+from ..hh.live import LIVE_KEY, live_on
 from ..hh.pipeline import captcha_hold, clear_captcha
 from ..tg import sources as tg_sources
 from . import charts, queries
@@ -219,7 +220,7 @@ def _table_context(request: web.Request, f: queries.Filter) -> dict:
 def _hold(site: Site) -> dict:
     until = captcha_hold(site.db, datetime.now(timezone.utc))
     return {"paused": site.db.get("paused") == "1", "captcha_until": until.isoformat() if until else None,
-            "resume_lang": site.db.get("resume_lang", "ru"),
+            "resume_lang": site.db.get("resume_lang", "ru"), "chats_live": live_on(site.db),
             "accounts_paused": [n for n in site.configured_accounts() if hh_accounts.paused(site.db, n)]}
 
 
@@ -284,21 +285,27 @@ async def application_page(request: web.Request) -> web.Response:
 
 
 async def chats_page(request: web.Request) -> web.Response:
-    """Chat list on the left, the open chat on the right (or alone on a phone). Read-only until v8."""
+    """Chat list on the left, the open chat with the reply box on the right (or alone on a phone)."""
     site: Site = request.app[SITE]
     db = site.db
     account, q = request.query.get("account", ""), request.query.get("q", "").strip()
+    status = request.query.get("status", "")
+    status = status if status in queries.CHAT_FILTERS else ""
     chat = messages = app = None
+    outbox = []
     if "id" in request.match_info:
         chat = db.chat(int(request.match_info["id"]))
         if chat is None:
             raise web.HTTPNotFound(text="нет такого чата")
         messages = db.chat_messages(chat["id"])
         app = db.application(chat["application_id"]) if chat["application_id"] else None
-    params = urlencode({k: v for k, v in {"account": account, "q": q}.items() if v})
-    return _render(request, "chats.html", chats=queries.chats(db.conn, account, q), chat=chat,
-                   messages=messages or [], app=app, account=account, q=q, qs=f"?{params}" if params else "",
-                   custom_stages=queries.custom_stages(db.conn))
+        outbox = db.outbox_for_chat(chat["id"])
+    params = urlencode({k: v for k, v in {"account": account, "status": status, "q": q}.items() if v})
+    return _render(request, "chats.html", chats=queries.chats(db.conn, account, q, status), chat=chat,
+                   messages=messages or [], app=app, account=account, q=q, status=status,
+                   filters=queries.CHAT_FILTERS, counts=queries.chat_filter_counts(db.conn, account),
+                   states=queries.CHAT_STATES, outbox=outbox, hold=_hold(site),
+                   qs=f"?{params}" if params else "", custom_stages=queries.custom_stages(db.conn))
 
 
 MONTHS = ("январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь",
@@ -609,6 +616,8 @@ async def api_settings(request: web.Request) -> web.Response:
     body = await _json_body(request)
     if "paused" in body:
         db.set("paused", "1" if _flag(body["paused"]) else "0")
+    if "chats_live" in body:
+        db.set(LIVE_KEY, "1" if _flag(body["chats_live"]) else "0")
     if "resume_lang" in body:
         if body["resume_lang"] not in ("ru", "en"):
             raise web.HTTPBadRequest(text="резюме: ru или en")
@@ -664,6 +673,41 @@ async def api_captcha_clear(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+MAX_REPLY = 4000
+
+
+async def api_chat_reply(request: web.Request) -> web.Response:
+    """Queue a reply; the hh worker types it into the chat within a few seconds (or after a captcha hold)."""
+    db: Database = request.app[SITE].db
+    body = await _json_body(request)
+    chat = db.chat(int(request.match_info["id"]))
+    if chat is None:
+        raise web.HTTPNotFound(text="нет такого чата")
+    if chat["source"] != "hh":
+        raise web.HTTPBadRequest(text="отвечать можно только в чаты hh")
+    text = str(body.get("text", "")).strip()
+    if not text:
+        raise web.HTTPBadRequest(text="пустой ответ")
+    if len(text) > MAX_REPLY:
+        raise web.HTTPBadRequest(text=f"слишком длинно: больше {MAX_REPLY} символов")
+    return web.json_response({"id": db.outbox_add(chat["id"], text)})
+
+
+async def api_outbox(request: web.Request) -> web.Response:
+    """retry (an error goes back to the queue) or delete (a reply that has not gone out)."""
+    db: Database = request.app[SITE].db
+    await _json_body(request)
+    outbox_id, action = int(request.match_info["id"]), request.match_info["action"]
+    row = db.outbox_item(outbox_id)
+    if row is None or row["status"] == "sent":
+        raise web.HTTPNotFound(text="такого неотправленного ответа нет")
+    if action == "retry":
+        db.outbox_mark(outbox_id, "pending")
+    else:
+        db.outbox_delete(outbox_id)
+    return web.json_response({"ok": True})
+
+
 async def api_last_event(request: web.Request) -> web.Response:
     return web.json_response({"id": queries.last_event_id(request.app[SITE].db.conn)})
 
@@ -699,6 +743,8 @@ def build_app(site: Site) -> web.Application:
         web.post(r"/api/interviews/{id:\d+}/delete", api_interview_delete),
         web.post(r"/api/applications/{id:\d+}/stage", api_stage),
         web.post(r"/api/applications/{id:\d+}/note", api_note),
+        web.post(r"/api/chats/{id:\d+}/reply", api_chat_reply),
+        web.post(r"/api/outbox/{id:\d+}/{action:retry|delete}", api_outbox),
         web.get("/api/last-event", api_last_event),
         web.static("/static", Path(__file__).parent / "static"),
     ])

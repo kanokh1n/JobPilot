@@ -156,6 +156,14 @@ CREATE INDEX messages_order ON messages (chat_id, sent_at);
 """
 
 
+# v4: the negotiation state hh reports for a chat (RESPONSE, INVITATION, DISCARD, ...), for the status
+# filter of the chat list, and where a reply typed on the site waits for the worker.
+V4 = """
+ALTER TABLE chats ADD COLUMN state TEXT;
+CREATE INDEX outbox_status ON outbox (status, id);
+"""
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -201,8 +209,12 @@ def _v3(conn: sqlite3.Connection) -> None:
     _run(conn, V3)
 
 
+def _v4(conn: sqlite3.Connection) -> None:
+    _run(conn, V4)
+
+
 # Index + 1 is the version a step brings the file to.
-STEPS: list[Callable[[sqlite3.Connection], None]] = [_v1, _v2, _v3]
+STEPS: list[Callable[[sqlite3.Connection], None]] = [_v1, _v2, _v3, _v4]
 VERSION = len(STEPS)
 
 

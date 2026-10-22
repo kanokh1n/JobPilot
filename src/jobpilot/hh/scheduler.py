@@ -11,16 +11,20 @@ from ..config import Config
 from ..db import Database
 from ..tg.notifier import Notifier
 from .accounts import load_accounts, paused, with_overrides
-from .apply import CaptchaError, HHBrowser, prune_screenshots
-from .chats import sync_chats
+from .apply import CaptchaError, prune_screenshots
+from .browsers import SharedBrowsers
+from .chats import SyncSummary, sync_chats
 from .followup import refresh_resumes, remind_pass
+from .live import LIVE_HOURS, ChatWatcher, live_on, send_pending
 from .pipeline import apply_pass, captcha_hold, record_captcha
 from .search import WebSearch
 
 log = logging.getLogger(__name__)
 
-# Two accounts never drive a browser at the same time.
-_browser_lock = asyncio.Lock()
+# Apply, reminder and resume passes of the two accounts never run at the same time (one IP, small server).
+# Chats and replies do not wait for them: they share the account's open browser (SharedBrowsers).
+_pass_lock = asyncio.Lock()
+_watchers: list[asyncio.Task] = []  # keep references to the watcher tasks while they run
 
 
 def _on_hold(db: Database, cfg: Config, job: str, account: str | None = None) -> bool:
@@ -38,27 +42,58 @@ def _on_hold(db: Database, cfg: Config, job: str, account: str | None = None) ->
     return False
 
 
+def _captcha_now(db: Database, cfg: Config) -> datetime | None:
+    return captcha_hold(db, datetime.now(ZoneInfo(cfg.tz)))
+
+
 def schedule_hh(scheduler: AsyncIOScheduler, cfg: Config, db: Database, notifier: Notifier) -> None:
-    """Apply passes every hour of the working day and one reminder pass a day, per account."""
+    """Apply passes every hour of the working day, one reminder pass a day, chats live or hourly, per account."""
     if not cfg.accounts_path.exists():
         log.info("no %s, hh part is off", cfg.accounts_path)
         return
+    browsers = SharedBrowsers(cfg.data_dir)
+
+    def watching() -> bool:
+        """Whether the chat watchers may keep hh.ru/chat open now."""
+        return (live_on(db) and db.get("paused") != "1" and _captcha_now(db, cfg) is None
+                and datetime.now(ZoneInfo(cfg.tz)).hour in LIVE_HOURS)
+
+    async def on_captcha(account: str, where: str) -> None:
+        strikes, until = record_captcha(db, datetime.now(ZoneInfo(cfg.tz)))
+        await notifier.say(f"hh/{account}: капча {where}, hh на паузе до {until:%d.%m %H:%M}")
+
+    async def report_chats(account: str, summary: SyncSummary) -> None:
+        log.info("hh/%s chats: %d listed, %d updated, %d new messages", account, summary.chats,
+                 summary.updated, summary.new_messages)
+        if summary.incoming:
+            await notifier.say(f"hh/{account}: новые сообщения от работодателей:\n"
+                               + "\n".join(f"• {name}" for name in summary.incoming))
+
+    async def outbox_job() -> None:
+        # Replies are typed by hand, so the paused flag does not hold them; a captcha cooldown does.
+        if not db.outbox_pending() or _captcha_now(db, cfg):
+            return
+        sent = await send_pending(
+            db, browsers, may_send=lambda: _captcha_now(db, cfg) is None, notify=notifier.say,
+            on_captcha=lambda account: on_captcha(account, "при отправке ответа"),
+        )
+        if sent:
+            log.info("hh replies sent: %d", sent)
+
     def prune_job() -> None:
         removed = prune_screenshots(cfg.data_dir / "screenshots")
         log.info("hh screenshots removed: %d", removed)
 
     scheduler.add_job(prune_job, "cron", hour=4, minute=0, id="hh-prune-screenshots", replace_existing=True)
     for number, account in enumerate(load_accounts(cfg.accounts_path).values()):
-        profile = cfg.data_dir / "browser" / account.name
-        shots = cfg.data_dir / "screenshots"
-
-        async def apply_job(base=account, profile=profile, shots=shots) -> None:
+        async def apply_job(base=account) -> None:
             if _on_hold(db, cfg, f"apply/{base.name}", base.name):
                 return
             account = with_overrides(base, db)  # limits and words changed on the site apply from the next pass
-            async with _browser_lock:
+            async with _pass_lock:
                 try:
-                    async with HHBrowser(profile, shots) as browser:
+                    async with browsers.use(account.name) as browser:
+                        browser.last_captcha_shot = None  # the browser may have been open for hours
                         summary = await apply_pass(
                             db=db, account=account, search=WebSearch(browser), browser=browser,
                             letters_dir=cfg.data_dir / "letters", tz=cfg.tz, live=True,
@@ -79,12 +114,12 @@ def schedule_hh(scheduler: AsyncIOScheduler, cfg: Config, db: Database, notifier
             if summary.applied or summary.failed:
                 await notifier.say(f"hh/{account.name}: откликов {summary.applied}, ошибок {summary.failed}")
 
-        async def remind_job(account=account, profile=profile, shots=shots) -> None:
+        async def remind_job(account=account) -> None:
             if _on_hold(db, cfg, f"remind/{account.name}", account.name):
                 return
-            async with _browser_lock:
+            async with _pass_lock:
                 try:
-                    async with HHBrowser(profile, shots) as browser:
+                    async with browsers.use(account.name) as browser:
                         sent = await remind_pass(
                             db, browser, account.name, live=True,
                             notify=lambda text: asyncio.get_running_loop().create_task(notifier.say(text)),
@@ -96,44 +131,49 @@ def schedule_hh(scheduler: AsyncIOScheduler, cfg: Config, db: Database, notifier
             if sent:
                 await notifier.say(f"hh/{account.name}: напоминаний отправлено {sent}")
 
-        async def refresh_job(account=account, profile=profile, shots=shots) -> None:
+        async def refresh_job(account=account) -> None:
             if _on_hold(db, cfg, f"refresh/{account.name}"):
                 return
-            async with _browser_lock:
+            async with _pass_lock:
                 try:
-                    async with HHBrowser(profile, shots) as browser:
+                    async with browsers.use(account.name) as browser:
                         await refresh_resumes(browser)
                 except Exception:
                     log.exception("hh resume refresh failed for %s", account.name)
 
-        async def chats_job(account=account, profile=profile, shots=shots) -> None:
-            if _on_hold(db, cfg, f"chats/{account.name}"):
+        async def chats_job(account=account) -> None:
+            """The hourly read, used only while the live watcher is switched off on the site."""
+            if live_on(db) or _on_hold(db, cfg, f"chats/{account.name}"):
                 return
-            async with _browser_lock:
-                try:
-                    async with HHBrowser(profile, shots) as browser:
-                        summary = await sync_chats(db, browser, account.name)
-                except CaptchaError:
-                    strikes, until = record_captcha(db, datetime.now(ZoneInfo(cfg.tz)))
-                    await notifier.say(f"hh/{account.name}: капча на странице чатов, hh на паузе до {until:%d.%m %H:%M}")
-                    return
-                except Exception:
-                    log.exception("hh chats pass failed for %s", account.name)
-                    return
-            log.info("hh/%s chats: %d listed, %d updated, %d new messages", account.name, summary.chats,
-                     summary.updated, summary.new_messages)
-            if summary.incoming:
-                await notifier.say(f"hh/{account.name}: новые сообщения от работодателей:\n"
-                                   + "\n".join(f"• {name}" for name in summary.incoming))
+            try:
+                async with browsers.use(account.name) as browser:
+                    summary = await sync_chats(db, browser, account.name)
+            except CaptchaError:
+                await on_captcha(account.name, "на странице чатов")
+                return
+            except Exception:
+                log.exception("hh chats pass failed for %s", account.name)
+                return
+            await report_chats(account.name, summary)
+
+        watcher = ChatWatcher(
+            db, browsers, account.name, may_run=watching,
+            on_summary=lambda summary, name=account.name: report_chats(name, summary),
+            on_captcha=lambda name=account.name: on_captcha(name, "на странице чатов"),
+            frames_log=cfg.data_dir / "dumps" / account.name / "ws_frames.txt",
+        )
+        _watchers.append(asyncio.get_running_loop().create_task(watcher.run(), name=f"hh-chats-live-{account.name}"))
 
         # Passes only run inside working hours; the per-day limit is enforced inside apply_pass.
         scheduler.add_job(apply_job, "cron", hour="9-20", minute=5 + 30 * number,
                           id=f"hh-apply-{account.name}", replace_existing=True)
         scheduler.add_job(remind_job, "cron", hour=13, minute=10 + 20 * number,
                           id=f"hh-remind-{account.name}", replace_existing=True)
-        # Chats are only read, so they are checked every hour of the day, between the apply passes.
+        # Without the live watcher, chats are read every hour of the day, between the apply passes.
         scheduler.add_job(chats_job, "cron", hour="8-23", minute=20 + 30 * number,
                           id=f"hh-chats-{account.name}", replace_existing=True)
         # hh lets a resume be raised once per 4 hours.
         scheduler.add_job(refresh_job, "cron", hour="9,13,17,21", minute=50 + 5 * number,
                           id=f"hh-refresh-{account.name}", replace_existing=True)
+    scheduler.add_job(outbox_job, "interval", seconds=15, id="hh-outbox", replace_existing=True,
+                      max_instances=1, coalesce=True)

@@ -52,19 +52,47 @@
   // Our own edits also add events, so the baseline moves with them.
   const fresh = document.getElementById("fresh");
   let last = Number(document.body.dataset.lastEvent || 0);
+  // Chats change in real time (v8): that page looks more often and reloads itself unless a reply is being typed.
+  const onChats = location.pathname.startsWith("/chats");
   if (fresh && last >= 0 && location.pathname !== "/login") {
     setInterval(async () => {
       try {
         const r = await fetch("/api/last-event");
         if (!r.ok) return;
         const { id } = await r.json();
-        if (id > last) { fresh.hidden = false; }
+        if (id <= last) return;
+        const box = document.querySelector("#reply textarea");
+        if (onChats && (!box || (!box.value.trim() && document.activeElement !== box))) location.reload();
+        else fresh.hidden = false;
       } catch (e) { /* offline for a moment */ }
-    }, 30000);
+    }, onChats ? 8000 : 30000);
     document.addEventListener("jp-edited", async () => {
       const r = await fetch("/api/last-event"); if (r.ok) last = (await r.json()).id;
     });
   }
+})();
+
+// Reply to the employer: queued on the site, the hh worker types it into the chat.
+(function () {
+  const form = document.getElementById("reply");
+  if (!form) return;
+  const box = form.querySelector("textarea"), error = form.querySelector(".error"), button = form.querySelector("button");
+  async function submit() {
+    const text = box.value.trim();
+    if (!text) return;
+    button.disabled = true; error.hidden = true;
+    try {
+      const r = await fetch(`/api/chats/${form.dataset.chat}/reply`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }),
+      });
+      if (r.status === 401) { location.href = "/login?next=" + encodeURIComponent(location.pathname + location.search); return; }
+      if (!r.ok) throw new Error(await r.text());
+      box.value = "";
+      location.reload();
+    } catch (e) { error.textContent = e.message || "Не отправилось"; error.hidden = false; button.disabled = false; }
+  }
+  form.addEventListener("submit", (e) => { e.preventDefault(); submit(); });
+  box.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submit(); } });
 })();
 
 // An open chat starts at its latest message.

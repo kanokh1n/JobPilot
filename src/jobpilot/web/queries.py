@@ -130,8 +130,32 @@ def last_event_id(conn: sqlite3.Connection) -> int:
     return conn.execute("SELECT COALESCE(MAX(id), 0) FROM events").fetchone()[0]
 
 
-def chats(conn: sqlite3.Connection, account: str = "", q: str = "", limit: int = 300) -> list[sqlite3.Row]:
-    """Chat list, newest first, with the stage of the linked application."""
+# hh negotiation state of a chat (chats.state) as shown on the site, with the stage colour of its pill.
+CHAT_STATES = {
+    "RESPONSE": ("отклик", "sent"),
+    "INVITATION": ("приглашение", "invitation"),
+    "PHONE_INTERVIEW": ("звонок", "invitation"),
+    "INTERVIEW": ("собеседование", "interview"),
+    "ASSESSMENT": ("оценка", "invitation"),
+    "DISCARD": ("отказ", "rejected"),
+    "HIRED": ("оффер", "offer"),
+}
+_INVITED = "('INVITATION', 'PHONE_INTERVIEW', 'INTERVIEW', 'ASSESSMENT')"
+_LAST_DIRECTION = ("(SELECT m.direction FROM messages m WHERE m.chat_id = c.id"
+                   " ORDER BY m.sent_at DESC, m.id DESC LIMIT 1)")
+# Status filter of the chat list. Chats read before v8 have no state until hh lists them again: for them
+# the stage of the linked application stands in.
+CHAT_FILTERS = {
+    "unread": ("непрочитанные", "c.unread > 0"),
+    "my_turn": ("ждут моего ответа", f"{_LAST_DIRECTION} = 'in'"),
+    "invite": ("приглашение", f"(c.state IN {_INVITED} OR (c.state IS NULL AND a.stage IN ('invitation', 'interview')))"),
+    "reject": ("отказ", "(c.state = 'DISCARD' OR (c.state IS NULL AND a.stage = 'rejected'))"),
+    "offer": ("оффер", "(c.state = 'HIRED' OR (c.state IS NULL AND a.stage = 'offer'))"),
+    "waiting": ("без ответа", "(c.state = 'RESPONSE' OR (c.state IS NULL AND COALESCE(a.stage, 'sent') IN ('sent', 'viewed')))"),
+}
+
+
+def _chat_where(account: str = "", q: str = "", status: str = "") -> tuple[str, list]:
     clauses, args = [], []
     if account:
         clauses.append("c.account = ?")
@@ -140,13 +164,33 @@ def chats(conn: sqlite3.Connection, account: str = "", q: str = "", limit: int =
         clauses.append("(c.title LIKE ? OR c.employer LIKE ? OR c.last_text LIKE ?"
                        " OR c.id IN (SELECT chat_id FROM messages WHERE text LIKE ?))")
         args += [f"%{q}%"] * 4
-    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    if status in CHAT_FILTERS:
+        clauses.append(CHAT_FILTERS[status][1])
+    return ("WHERE " + " AND ".join(clauses)) if clauses else "", args
+
+
+def chats(conn: sqlite3.Connection, account: str = "", q: str = "", status: str = "",
+          limit: int = 300) -> list[sqlite3.Row]:
+    """Chat list, newest first, with the stage of the linked application."""
+    where, args = _chat_where(account, q, status)
     return conn.execute(
-        "SELECT c.*, a.name AS app_name, a.employer AS app_employer, a.stage, a.stage_manual"
+        "SELECT c.*, a.name AS app_name, a.employer AS app_employer, a.stage, a.stage_manual,"
+        f" {_LAST_DIRECTION} AS last_direction"
         " FROM chats c LEFT JOIN applications a ON a.id = c.application_id"
         f" {where} ORDER BY c.last_message_at IS NULL, c.last_message_at DESC, c.id DESC LIMIT ?",
         [*args, limit],
     ).fetchall()
+
+
+def chat_filter_counts(conn: sqlite3.Connection, account: str = "") -> dict[str, int]:
+    """How many chats each status filter would show (for the account picked, all of them otherwise)."""
+    counts = {}
+    for key in ("", *CHAT_FILTERS):
+        where, args = _chat_where(account, "", key)
+        counts[key] = conn.execute(
+            f"SELECT COUNT(*) FROM chats c LEFT JOIN applications a ON a.id = c.application_id {where}", args
+        ).fetchone()[0]
+    return counts
 
 
 def unread_total(conn: sqlite3.Connection) -> int:

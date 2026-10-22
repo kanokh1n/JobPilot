@@ -1,10 +1,13 @@
-"""Employer chats of an hh account, copied into the shared database for the site (read-only).
+"""Employer chats of an hh account, copied into the shared database for the site, and replies sent from it.
 
 The chat list comes from the page https://hh.ru/chat (its first 20 chats are in a JSON <template>), the
 messages from the chat app's own API (chatik.hh.ru/chatik/api/chat_data), fetched from inside that page
-the way the app does it. Nothing is posted to hh, so chats stay unread there.
+the way the app does it. Reading posts nothing to hh, so chats stay unread there.
 Checked against answers saved with `jobpilot hh-chats-dump` on 2026-10-22, except the next-page call
 (CHATS_PAGE_URL), which is a guess: when it fails, only the newest 20 chats are read.
+
+A reply is typed into the chat page like a person would (send_reply); the input is the one the reminders
+already use in the response iframe, assumed to be the same on hh.ru/chat/<id> (unverified).
 """
 from __future__ import annotations
 
@@ -28,6 +31,10 @@ API = "https://chatik.hh.ru/chatik/api"
 CHAT_DATA_URL = API + "/chat_data?chatId={chat}&applicantId={me}&reason=connect&do_not_track_session_events=true"
 CHATS_PAGE_URL = API + "/chats?from={cursor}&filterUnread=false&filterHasTextMessage=false" \
                        "&do_not_track_session_events=true"
+CHAT_URL = "https://hh.ru/chat/{chat}"
+CHAT_INPUT = 'textarea[data-qa="text-input"]'
+CHAT_BUBBLE = '[data-qa="chat-bubble-text"]'
+ME_KEY = "hh_chat_me:{account}"  # our participant id in the chat app, kept for single-chat reads
 INITIAL_STATE_RE = re.compile(r'<template[^>]*class="Chatik-InitialState"[^>]*>(.*?)</template>', re.S)
 
 # Applicant state of the negotiation, as the chat app reports it, to our stage.
@@ -173,14 +180,16 @@ async def _fetch_json(page, url: str) -> dict:
 
 
 async def sync_chats(db: Database, browser: HHBrowser, account: str, max_pages: int = 3,
-                     sleep=asyncio.sleep) -> SyncSummary:
+                     sleep=asyncio.sleep, page=None) -> SyncSummary:
     """Copy new chats and messages of the account into the database.
 
     Only chats whose last message changed since the previous pass are opened. Older pages of the list
     are read only while they still hold changed chats (on the first run: up to `max_pages` pages).
+    With `page` (the chat watcher's open tab) that tab is reloaded and left open.
     """
     summary = SyncSummary()
-    page = await browser.context.new_page()
+    own_page = page is None
+    page = page or await browser.context.new_page()
     try:
         await page.goto(CHAT_LIST_URL, wait_until="domcontentloaded", timeout=90_000)
         if await browser.has_captcha(page, f"chats_{account}"):
@@ -190,6 +199,8 @@ async def sync_chats(db: Database, browser: HHBrowser, account: str, max_pages: 
         state = initial_state(await page.content())
         listing = parse_chat_list(state.get("chats") or {})
         me = listing.me or str(state.get("userId") or "")
+        if me:
+            db.set(ME_KEY.format(account=account), me)
         chats = list(listing.chats)
         cursor, pages = listing.next_cursor, 1
         while cursor and pages < max_pages and listing.chats and any(
@@ -207,7 +218,7 @@ async def sync_chats(db: Database, browser: HHBrowser, account: str, max_pages: 
             stored = db.chat_last_message_at(account, chat.id)
             chat_id = db.chat_upsert(account, chat.id, vacancy_id=chat.vacancy_id, title=chat.title,
                                      employer=chat.employer, last_message_at=chat.last_message_at,
-                                     unread=chat.unread, last_text=chat.last_text)
+                                     unread=chat.unread, last_text=chat.last_text, state=chat.state)
             summary.chats += 1
             row = db.chat(chat_id)
             stage = CHAT_STAGES.get(chat.state or "")
@@ -226,5 +237,66 @@ async def sync_chats(db: Database, browser: HHBrowser, account: str, max_pages: 
                 summary.incoming.append(f"{chat.title} ({chat.employer})")
             await sleep(random.uniform(1.5, 4))
         return summary
+    finally:
+        if own_page:
+            await page.close()
+
+
+async def _chat_input(page):
+    """The message box of an open chat: on the page itself or inside the chat iframe."""
+    box = page.locator(CHAT_INPUT)
+    try:
+        await box.first.wait_for(timeout=20_000)
+        return box.first, page
+    except Exception:
+        frame = page.frame_locator("iframe[src*='chatik'], iframe.chatik-integration-iframe")
+        box = frame.locator(CHAT_INPUT)
+        await box.first.wait_for(timeout=10_000)
+        return box.first, frame
+
+
+async def send_reply(db: Database, browser: HHBrowser, account: str, chat_id: int, text: str) -> int:
+    """Type `text` into the hh chat and send it; then copy the chat's messages, so the reply shows up as
+    an hh message on the site. Returns how many new messages were stored."""
+    chat = db.chat(chat_id)
+    page = await browser.context.new_page()
+    try:
+        await page.goto(CHAT_URL.format(chat=chat["external_id"]), wait_until="domcontentloaded", timeout=90_000)
+        if await browser.has_captcha(page, f"reply_{account}"):
+            raise CaptchaError("captcha on the chat page")
+        if "/login" in page.url:
+            raise RuntimeError("not signed in to hh")
+        box, scope = await _chat_input(page)
+        await box.fill(text)
+        await box.press("Enter")
+        await page.wait_for_timeout(2500)
+        bubbles = scope.locator(CHAT_BUBBLE)
+        if not await bubbles.count() or text.strip()[:20] not in await bubbles.last.inner_text():
+            raise RuntimeError("the reply did not appear in the chat")
+        me = db.get(ME_KEY.format(account=account))
+        if not me:
+            try:
+                me = parse_chat_list(initial_state(await page.content()).get("chats") or {}).me
+            except LookupError:
+                me = None
+        if not me:
+            return 0  # sent; the next chat pass copies it
+        try:
+            messages = parse_messages(await _fetch_json(page, CHAT_DATA_URL.format(chat=chat["external_id"], me=me)))
+        except Exception as error:
+            log.warning("hh/%s reply sent, chat not re-read: %s", account, error)
+            return 0
+        new, _ = db.chat_add_messages(chat_id, [(m.id, m.direction, m.author, m.text, m.sent_at) for m in messages])
+        if messages:
+            last = messages[-1]
+            db.chat_upsert(account, chat["external_id"], last_message_at=last.sent_at, last_text=last.text,
+                           unread=0)
+        return new
+    except Exception:
+        try:
+            await page.screenshot(path=str(browser.screenshots_dir / f"reply_{account}_{chat_id}.png"))
+        except Exception:
+            pass
+        raise
     finally:
         await page.close()

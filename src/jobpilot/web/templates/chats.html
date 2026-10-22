@@ -9,6 +9,10 @@
         <option value="">все аккаунты</option>
         {% for a in accounts %}<option value="{{ a }}" {% if account == a %}selected{% endif %}>{{ a }}</option>{% endfor %}
       </select>
+      <select name="status" onchange="this.form.submit()">
+        <option value="">все статусы ({{ counts[''] }})</option>
+        {% for key, f in filters.items() %}<option value="{{ key }}" {% if status == key %}selected{% endif %}>{{ f[0] }} ({{ counts[key] }})</option>{% endfor %}
+      </select>
       <input type="search" name="q" value="{{ q }}" placeholder="вакансия, компания, текст">
     </form>
     <ul>
@@ -18,13 +22,15 @@
           <span class="row1"><b>{{ c.title or c.app_name or 'без названия' }}</b>
             <span class="muted small nowrap">{{ c.last_message_at | local }}</span></span>
           <span class="row2 muted small">{{ c.employer or c.app_employer }} · {{ c.account }}
-            {% if c.stage %}{{ pill(c.stage, c.stage_manual) }}{% endif %}
+            {% if c.state and c.state != 'RESPONSE' %}{% set st = states.get(c.state, (c.state | lower, 'none')) %}<span class="pill s-{{ st[1] }}" title="статус на hh">{{ st[0] }}</span>
+            {% elif c.stage %}{{ pill(c.stage, c.stage_manual) }}{% endif %}
+            {% if c.last_direction == 'in' %}<span class="turn" title="последнее сообщение от работодателя">ваш ход</span>{% endif %}
             {% if c.unread %}<span class="badge">{{ c.unread }}</span>{% endif %}</span>
           <span class="row3 muted small">{{ c.last_text | truncate(90) }}</span>
         </a>
       </li>
       {% else %}
-      <li class="muted empty">Чатов пока нет. Воркер забирает их с hh раз в час.</li>
+      <li class="muted empty">{% if status or q %}Под фильтр ничего не попало.{% else %}Чатов пока нет. Воркер забирает их с hh{{ ' сразу, как они меняются' if hold.chats_live else ' раз в час' }}.{% endif %}</li>
       {% endfor %}
     </ul>
   </aside>
@@ -47,7 +53,35 @@
       {% endif %}
     </header>
     {{ thread(messages) }}
-    <p class="muted small readonly">Ответить можно пока только на hh. Отправка с сайта будет в v8.</p>
+    {% if outbox %}
+    <div class="outbox">
+      {% for o in outbox %}
+      <div class="msg out queued {{ o.status }}" data-outbox="{{ o.id }}">
+        <div class="text">{{ o.text }}</div>
+        <div class="meta small">
+          {% if o.status == 'pending' %}
+            {% if hold.captcha_until %}ждёт конца паузы из-за капчи ({{ hold.captcha_until | local }}){% else %}отправляется…{% endif %}
+            · <button type="button" class="link" data-post="/api/outbox/{{ o.id }}/delete" data-confirm="Не отправлять этот ответ?">отменить</button>
+          {% elif o.status == 'error' %}
+            не ушло: {{ o.error }}. Проверьте чат на hh, прежде чем повторять, вдруг всё же дошло.
+            · <button type="button" class="link" data-post="/api/outbox/{{ o.id }}/retry">повторить</button>
+            · <button type="button" class="link" data-post="/api/outbox/{{ o.id }}/delete">удалить</button>
+          {% else %}отправлено {{ o.sent_at | local }}, ждём копию с hh{% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% if chat.source == 'hh' %}
+    <form class="reply" id="reply" data-chat="{{ chat.id }}">
+      <textarea name="text" rows="3" maxlength="4000" placeholder="Ответ работодателю. Ctrl+Enter — отправить" required></textarea>
+      <div class="reply-bar">
+        <span class="muted small">Уйдёт с аккаунта {{ chat.account }} через несколько секунд, как будто вы написали на hh.</span>
+        <button>Отправить</button>
+      </div>
+      <p class="error" hidden></p>
+    </form>
+    {% endif %}
     {% else %}
     <p class="muted pick">Выберите чат слева.</p>
     {% endif %}

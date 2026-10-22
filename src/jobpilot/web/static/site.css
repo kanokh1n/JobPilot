@@ -118,6 +118,15 @@ pre.letter { white-space: pre-wrap; font: inherit; background: var(--bg); paddin
 .msg.in { align-self: flex-start; }
 .msg .who { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
 .msg .text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat-list .turn { font-size: 11px; color: var(--accent); border: 1px solid currentColor; border-radius: 999px; padding: 0 6px; }
+.outbox { display: flex; flex-direction: column; gap: 6px; padding: 0 16px 10px; }
+.msg.queued { opacity: .75; border: 1px dashed var(--line); }
+.msg.queued.error { opacity: 1; border-color: var(--rejected); }
+.msg.queued .meta { color: var(--muted); margin-top: 4px; }
+.reply { border-top: 1px solid var(--line); padding: 10px 16px; display: grid; gap: 6px; margin: 0; }
+.reply textarea { width: 100%; resize: vertical; min-height: 60px; font: inherit; }
+.reply-bar { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.reply .error { margin: 0; }
 .panel .thread { max-height: 520px; overflow-y: auto; margin-bottom: 14px; }
 
 @media (max-width: 760px) {

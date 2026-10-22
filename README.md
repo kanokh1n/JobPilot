@@ -106,6 +106,26 @@ message is announced in Telegram; a chat state such as "discard" or "interview" 
 application and shows the open chat; the application card shows its chat too. Replies are still sent on
 hh: sending from the site is v8.
 
+## Live chats and replies (v8)
+
+Each hh account now has one shared browser (`hh/browsers.py`): the apply, reminder, resume and chat jobs
+borrow it instead of opening the profile themselves, so they no longer clash over it. From 8:00 to 24:00
+a watcher (`hh/live.py`) keeps https://hh.ru/chat open in that browser; when the chat app's websocket
+reports a chat event, the chats are read again at once (at most once a minute and 20 times an hour per
+account), otherwise once an hour as before. A captcha hold, the global pause or the "Чаты hh в реальном
+времени" switch on /settings closes the watcher; with the switch off chats are read hourly again (use it
+if the server runs short of memory: the watcher keeps two Chromiums open in the daytime).
+
+Replies are typed on the chat page of the site. They wait in the `outbox` table; the worker checks it
+every 15 seconds and types the text into the hh chat like a person, then copies the chat back. During a
+captcha hold they wait; a failed one shows on the site with "повторить" and is never retried by itself.
+The chat list can be filtered by hh status (приглашение, отказ, оффер, без ответа), unread chats and
+chats where the employer wrote last. Database v4 adds `chats.state`.
+
+Not verified on live hh yet: the frames of the chat websocket (the first 40 of each session go to
+`data/dumps/<account>/ws_frames.txt`, and `jobpilot hh-chats-dump <account>` saves them to `ws.txt`) and the
+message box on hh.ru/chat/<id> (the same `data-qa="text-input"` as in the response iframe is assumed).
+
 ## Calendar and charts (v5)
 
 "Календарь" shows interviews by month and the next ones; an interview has a date and time (in `TZ`),

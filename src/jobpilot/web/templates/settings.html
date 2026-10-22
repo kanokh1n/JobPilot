@@ -16,6 +16,7 @@
         <option value="en" {% if hold.resume_lang == 'en' %}selected{% endif %}>EN</option>
       </select></label>
     <p class="muted small">Письмо и напоминание берутся на том же языке, что и резюме.</p>
+    <label class="check"><input type="checkbox" name="chats_live" {% if hold.chats_live %}checked{% endif %}> Чаты hh в реальном времени <span class="muted small">(с 8 до 24 браузер каждого аккаунта держит чаты открытыми; выключить, если серверу не хватает памяти: тогда чаты читаются раз в час)</span></label>
     <p class="error" hidden></p>
     <div class="actions"><button>Сохранить</button></div>
   </form>

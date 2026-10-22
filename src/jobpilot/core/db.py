@@ -320,12 +320,12 @@ class Database:
 
     def chat_upsert(self, account: str, external_id: str, *, vacancy_id: str | None = None, title: str = "",
                     employer: str = "", last_message_at: str | None = None, unread: int = 0,
-                    last_text: str = "", source: str = "hh") -> int:
+                    last_text: str = "", state: str | None = None, source: str = "hh") -> int:
         """Store what the chat list says about a chat; links it to our application for the same vacancy."""
         app_id = self._hh_id(account, vacancy_id) if vacancy_id and source == "hh" else None
         self._conn.execute(
             "INSERT INTO chats (source, account, external_id, application_id, vacancy_id, title, employer,"
-            " last_message_at, unread, last_text, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            " last_message_at, unread, last_text, state, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             " ON CONFLICT (source, account, external_id) DO UPDATE SET"
             " application_id = COALESCE(excluded.application_id, chats.application_id),"
             " vacancy_id = COALESCE(excluded.vacancy_id, chats.vacancy_id),"
@@ -334,9 +334,10 @@ class Database:
             " last_message_at = COALESCE(excluded.last_message_at, chats.last_message_at),"
             " unread = excluded.unread,"
             " last_text = CASE WHEN excluded.last_text != '' THEN excluded.last_text ELSE chats.last_text END,"
+            " state = COALESCE(excluded.state, chats.state),"
             " synced_at = excluded.synced_at",
             (source, account, external_id, app_id, vacancy_id, title, employer, last_message_at, unread,
-             last_text, _now()),
+             last_text, state, _now()),
         )
         return self._conn.execute(
             "SELECT id FROM chats WHERE source = ? AND account = ? AND external_id = ?",
@@ -368,6 +369,53 @@ class Database:
     def chat_messages(self, chat_id: int) -> list[sqlite3.Row]:
         return self._conn.execute(
             "SELECT * FROM messages WHERE chat_id = ? ORDER BY sent_at, id", (chat_id,)
+        ).fetchall()
+
+    # --- replies typed on the site; the hh worker sends them ---
+
+    def outbox_add(self, chat_id: int, text: str) -> int:
+        chat = self.chat(chat_id)
+        cur = self._conn.execute(
+            "INSERT INTO outbox (account, chat_id, text, created_at) VALUES (?, ?, ?, ?)",
+            (chat["account"], chat_id, text, _now()),
+        )
+        self.event("outbox", chat["account"], chat_id, outbox=cur.lastrowid)
+        return cur.lastrowid
+
+    def outbox_item(self, outbox_id: int) -> sqlite3.Row | None:
+        return self._conn.execute("SELECT * FROM outbox WHERE id = ?", (outbox_id,)).fetchone()
+
+    def outbox_pending(self) -> list[sqlite3.Row]:
+        """Replies waiting to go out, oldest first, with the hh id of their chat."""
+        return self._conn.execute(
+            "SELECT o.*, c.external_id, c.title FROM outbox o JOIN chats c ON c.id = o.chat_id"
+            " WHERE o.status = 'pending' ORDER BY o.id"
+        ).fetchall()
+
+    def outbox_mark(self, outbox_id: int, status: str, error: str | None = None) -> None:
+        """pending (again, for a retry), sent or error."""
+        self._conn.execute(
+            "UPDATE outbox SET status = ?, error = ?, sent_at = CASE WHEN ? = 'sent' THEN ? ELSE sent_at END"
+            " WHERE id = ?",
+            (status, error, status, _now(), outbox_id),
+        )
+        row = self.outbox_item(outbox_id)
+        self.event("outbox", row["account"], row["chat_id"], outbox=outbox_id, status=status)
+
+    def outbox_delete(self, outbox_id: int) -> bool:
+        """Drop a reply that has not gone out; a sent one stays as a record."""
+        return self._conn.execute(
+            "DELETE FROM outbox WHERE id = ? AND status != 'sent'", (outbox_id,)
+        ).rowcount > 0
+
+    def outbox_for_chat(self, chat_id: int) -> list[sqlite3.Row]:
+        """What the site shows under a chat: replies not sent yet or failed, and sent ones whose copy has
+        not come back from hh yet."""
+        return self._conn.execute(
+            "SELECT * FROM outbox o WHERE o.chat_id = ? AND (o.status != 'sent' OR NOT EXISTS ("
+            " SELECT 1 FROM messages m WHERE m.chat_id = o.chat_id AND m.direction = 'out' AND m.text = o.text))"
+            " ORDER BY o.id",
+            (chat_id,),
         ).fetchall()
 
     def first_seen(self, key: str, now: datetime | None = None) -> datetime:
