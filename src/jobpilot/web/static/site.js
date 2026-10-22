@@ -69,3 +69,43 @@
 
 // An open chat starts at its latest message.
 document.querySelectorAll(".chat-open .thread, .panel .thread").forEach((t) => { t.scrollTop = t.scrollHeight; });
+
+// Chart hover: the day and its numbers next to the pointer.
+(function () {
+  const tip = document.getElementById("tip");
+  if (!tip) return;
+  document.querySelectorAll(".chart .day").forEach((g) => {
+    g.addEventListener("pointermove", (e) => {
+      tip.textContent = g.dataset.tip; tip.hidden = false;
+      const x = Math.min(e.clientX + 12, window.innerWidth - tip.offsetWidth - 8);
+      tip.style.left = x + "px"; tip.style.top = (e.clientY - 34) + "px";
+    });
+    g.addEventListener("pointerleave", () => { tip.hidden = true; });
+  });
+})();
+
+// Interview form: saved as JSON like the other edits.
+(function () {
+  const form = document.getElementById("interview");
+  if (!form) return;
+  const error = form.querySelector(".error");
+  async function send(url, body) {
+    const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (r.status === 401) { location.href = "/login?next=" + encodeURIComponent(location.pathname + location.search); return; }
+    if (!r.ok) throw new Error(await r.text());
+    location.href = form.dataset.back;
+  }
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const body = Object.fromEntries(new FormData(form).entries());
+    const id = form.dataset.id;
+    try { await send(id ? `/api/interviews/${id}` : "/api/interviews", body); }
+    catch (err) { error.textContent = err.message || "Не сохранилось"; error.hidden = false; }
+  });
+  const del = form.querySelector("[data-delete]");
+  if (del) del.addEventListener("click", async () => {
+    if (!confirm("Удалить собеседование из календаря?")) return;
+    try { await send(`/api/interviews/${form.dataset.id}/delete`, {}); }
+    catch (err) { error.textContent = err.message; error.hidden = false; }
+  });
+})();

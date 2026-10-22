@@ -105,3 +105,18 @@ message is announced in Telegram; a chat state such as "discard" or "interview" 
 (never over a manual one). The site's "Чаты" page lists the chats with the stage of the matching
 application and shows the open chat; the application card shows its chat too. Replies are still sent on
 hh: sending from the site is v8.
+
+## Calendar and charts (v5)
+
+"Календарь" shows interviews by month and the next ones; an interview has a date and time (in `TZ`),
+an optional application, a call link and a note, and is added or edited by hand (also from the
+application card). Adding one to an application that is still "sent", "viewed" or "invitation" moves it
+to "interview". On the first start of the site, interview dates written in notes of applications at the
+interview stage ("собес 24.10 в 15:00 https://...") are copied into the calendar; notes stay as they
+were. Applications at that stage still without a date are listed on top of the calendar.
+`jobpilot interviews-import --dry-run` shows what would be copied, without `--dry-run` it copies again
+(applications that already have an interview are skipped).
+
+"Графики": applications per day by account, employer answers per day (invitation or rejection) and the
+funnel of the applications sent in the last 7, 30 or 90 days, in total and per account. The overview
+also lists the next interviews.

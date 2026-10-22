@@ -157,3 +157,129 @@ def chat_for_application(conn: sqlite3.Connection, app_id: int) -> sqlite3.Row |
     return conn.execute(
         "SELECT * FROM chats WHERE application_id = ? ORDER BY last_message_at DESC LIMIT 1", (app_id,)
     ).fetchone()
+
+
+# --- calendar ---
+
+def interviews_between(conn: sqlite3.Connection, start: datetime, end: datetime) -> list[sqlite3.Row]:
+    """Interviews in [start, end), with what they belong to."""
+    return conn.execute(
+        "SELECT i.*, a.name, a.employer, a.account, a.stage, a.url FROM interviews i"
+        " LEFT JOIN applications a ON a.id = i.application_id"
+        " WHERE i.starts_at >= ? AND i.starts_at < ? ORDER BY i.starts_at, i.id",
+        (start.astimezone(timezone.utc).isoformat(), end.astimezone(timezone.utc).isoformat()),
+    ).fetchall()
+
+
+def upcoming_interviews(conn: sqlite3.Connection, limit: int = 8) -> list[sqlite3.Row]:
+    """From an hour ago on: an interview that is going on right now still shows."""
+    start = datetime.now(timezone.utc) - timedelta(hours=1)
+    return interviews_between(conn, start, start + timedelta(days=3650))[:limit]
+
+
+def interviews_for_application(conn: sqlite3.Connection, app_id: int) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM interviews WHERE application_id = ? ORDER BY starts_at", (app_id,)
+    ).fetchall()
+
+
+def linkable_applications(conn: sqlite3.Connection, keep: int | None = None) -> list[sqlite3.Row]:
+    """Applications an interview can be tied to: the employer already reacted (plus the one tied now)."""
+    return conn.execute(
+        "SELECT id, account, name, employer, stage FROM applications"
+        " WHERE (stage IS NOT NULL AND stage NOT IN (?, ?, ?)) OR id = ?"
+        " ORDER BY updated_at DESC LIMIT 300",
+        (stages.SENT, stages.VIEWED, stages.GHOSTED, keep or 0),
+    ).fetchall()
+
+
+# --- charts ---
+
+# How far an application got, from the stages it ever had: each level includes the ones after it.
+REACHED = (
+    ("sent", "отправлено", None),
+    ("viewed", "просмотрено", {stages.VIEWED, stages.INVITATION, stages.INTERVIEW, stages.OFFER, stages.REJECTED}),
+    ("answered", "ответили", {stages.INVITATION, stages.INTERVIEW, stages.OFFER, stages.REJECTED}),
+    ("invited", "пригласили", {stages.INVITATION, stages.INTERVIEW, stages.OFFER}),
+    ("interview", "собеседование", {stages.INTERVIEW, stages.OFFER}),
+    ("offer", "оффер", {stages.OFFER}),
+)
+# Employer answers per day: the first day an application got each of them (by hh or set by hand).
+REACTIONS = (
+    ("invited", "приглашение", {stages.INVITATION, stages.INTERVIEW, stages.OFFER}),
+    ("rejected", "отказ", {stages.REJECTED}),
+)
+
+
+def _days(tz: str, days: int) -> list:
+    today = datetime.now(ZoneInfo(tz)).date()
+    return [today - timedelta(days=i) for i in range(days - 1, -1, -1)]
+
+
+def applied_by_day(conn: sqlite3.Connection, tz: str, days: int, accounts_: list[str]) -> dict:
+    """{"days": [date...], "series": {account: [n per day]}} for applications sent."""
+    zone, axis = ZoneInfo(tz), _days(tz, days)
+    index = {d: i for i, d in enumerate(axis)}
+    series = {a: [0] * days for a in accounts_}
+    for row in conn.execute(
+        "SELECT account, applied_at FROM applications WHERE status = 'applied' AND applied_at >= ?",
+        (_day_start(tz, days - 1),),
+    ):
+        i = index.get(datetime.fromisoformat(row["applied_at"]).astimezone(zone).date())
+        if i is not None:
+            series.setdefault(row["account"], [0] * days)[i] += 1
+    return {"days": axis, "series": series}
+
+
+def reactions_by_day(conn: sqlite3.Connection, tz: str, days: int, account: str = "") -> dict:
+    """{"days": [...], "series": {reaction: [n per day]}}: first invitation, rejection."""
+    zone, axis = ZoneInfo(tz), _days(tz, days)
+    index = {d: i for i, d in enumerate(axis)}
+    series = {key: [0] * days for key, _, _ in REACTIONS}
+    where, args = ("AND a.account = ?", [account]) if account else ("", [])
+    first: dict[tuple[int, str], str] = {}
+    for row in conn.execute(
+        "SELECT h.application_id, h.stage, h.at FROM stage_history h JOIN applications a ON a.id = h.application_id"
+        f" WHERE 1 = 1 {where} ORDER BY h.at", args
+    ):
+        for key, _, members in REACTIONS:
+            if row["stage"] in members:
+                first.setdefault((row["application_id"], key), row["at"])
+    for (_, key), at in first.items():
+        i = index.get(datetime.fromisoformat(at).astimezone(zone).date())
+        if i is not None:
+            series[key][i] += 1
+    return {"days": axis, "series": series}
+
+
+def funnel(conn: sqlite3.Connection, tz: str, days: int, account: str = "") -> dict:
+    """How far the applications sent in the period got; by account and in total."""
+    where, args = ("AND account = ?", [account]) if account else ("", [])
+    apps = conn.execute(
+        f"SELECT id, account, stage FROM applications WHERE status = 'applied' AND applied_at >= ? {where}",
+        [_day_start(tz, days - 1), *args],
+    ).fetchall()
+    seen: dict[int, set[str]] = {r["id"]: {r["stage"]} for r in apps}
+    if seen:
+        marks = ",".join("?" * len(seen))
+        for row in conn.execute(
+            f"SELECT application_id, stage FROM stage_history WHERE application_id IN ({marks})", list(seen)
+        ):
+            seen[row["application_id"]].add(row["stage"])
+        for row in conn.execute(
+            f"SELECT DISTINCT application_id FROM interviews WHERE application_id IN ({marks})", list(seen)
+        ):
+            seen[row["application_id"]].add(stages.INTERVIEW)
+
+    def count(rows) -> dict:
+        out = {}
+        for key, _, members in REACHED:
+            out[key] = sum(1 for r in rows if members is None or seen[r["id"]] & members)
+        out["rejected"] = sum(1 for r in rows if r["stage"] == stages.REJECTED)
+        out["ghosted"] = sum(1 for r in rows if r["stage"] == stages.GHOSTED)
+        return out
+
+    by_account: dict[str, list] = {}
+    for r in apps:
+        by_account.setdefault(r["account"], []).append(r)
+    return {"total": count(apps), "accounts": {a: count(rows) for a, rows in sorted(by_account.items())}}

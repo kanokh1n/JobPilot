@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% from "_macros.html" import chart %}
+{% block title %}Графики · JobPilot{% endblock %}
+{% block body %}
+<h1>Графики</h1>
+<form class="filters" method="get">
+  <select name="days" onchange="this.form.submit()">
+    {% for d in (7, 30, 90) %}<option value="{{ d }}" {% if days == d %}selected{% endif %}>{{ d }} дней</option>{% endfor %}
+  </select>
+  <select name="account" onchange="this.form.submit()">
+    <option value="">все аккаунты</option>
+    {% for a in accounts %}<option value="{{ a }}" {% if account == a %}selected{% endif %}>{{ a }}</option>{% endfor %}
+  </select>
+  <noscript><button>Показать</button></noscript>
+</form>
+<div class="grid2">
+  <section class="panel">
+    <h3>Отклики по дням</h3>
+    {{ chart(applied, colors, 'Отклики по дням') }}
+  </section>
+  <section class="panel">
+    <h3>Ответы работодателей по дням</h3>
+    {{ chart(answers, {'invited': 's-invitation fillc', 'rejected': 's-rejected fillc'}, 'Ответы по дням') }}
+    <p class="muted small">День, когда отклик впервые получил приглашение (или сразу собеседование, оффер) либо отказ.</p>
+  </section>
+</div>
+
+<h2>Воронка откликов за {{ days }} дней</h2>
+<p class="muted small">Только отклики, отправленные за период: сколько из них дошло до каждого шага, хоть раз (отказ после просмотра тоже считается просмотром и ответом).</p>
+<div class="grid2">
+  <section class="panel">
+    {% set t = funnel.total %}
+    <div class="funnel wide">
+      {% for key, name, _ in levels %}
+      <div class="step lv-{{ key }}"><span class="n">{{ t[key] }}</span><span class="l">{{ name }}{% if not loop.first and t.sent %} <span class="muted">{{ (100 * t[key] / t.sent) | round | int }}%</span>{% endif %}</span>
+        <span class="bar"><i style="width: {{ (100 * t[key] / t.sent) | round(1) if t.sent else 0 }}%"></i></span></div>
+      {% endfor %}
+    </div>
+  </section>
+  <section class="panel">
+    <div class="scroll flat">
+    <table class="apps stats">
+      <thead><tr><th>Аккаунт</th>{% for key, name, _ in levels %}<th>{{ name }}</th>{% endfor %}<th>отказ</th><th>загостили</th></tr></thead>
+      <tbody>
+      {% for a, row in funnel.accounts.items() %}
+      <tr><td><a href="/account/{{ a }}">{{ a }}</a></td>
+        {% for key, _, _ in levels %}<td>{{ row[key] }}{% if not loop.first and row.sent %} <span class="muted small">{{ (100 * row[key] / row.sent) | round | int }}%</span>{% endif %}</td>{% endfor %}
+        <td>{{ row.rejected }}</td><td>{{ row.ghosted }}</td></tr>
+      {% else %}
+      <tr><td colspan="9" class="muted">За период откликов нет.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </section>
+</div>
+<div id="tip" class="tip" hidden></div>
+{% endblock %}

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import pill, thread %}
+{% from "_macros.html" import pill, thread, interview_line %}
 {% block title %}{{ row.name }} · JobPilot{% endblock %}
 {% block body %}
 <p><a href="javascript:history.back()">← назад</a></p>
@@ -29,6 +29,10 @@
   </dl>
 </section>
 <section class="panel">
+  <h3>Собеседования <a class="small" href="/calendar/new?app={{ row.id }}&amp;back=/application/{{ row.id }}">+ добавить</a></h3>
+  <ul class="changes ivs">
+    {% for i in interviews %}{{ interview_line(i, False) }}{% else %}<li class="muted">Нет.</li>{% endfor %}
+  </ul>
   <h3>История этапов</h3>
   <ul class="changes">
     {% for h in history | reverse %}

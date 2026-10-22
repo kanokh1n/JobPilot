@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Собеседование' if row else 'Новое собеседование' }} · JobPilot{% endblock %}
+{% block body %}
+<p><a href="{{ back }}">← назад</a></p>
+<h1>{{ 'Собеседование' if row else 'Новое собеседование' }}</h1>
+<form class="panel iv-form" id="interview" data-id="{{ row.id if row else '' }}" data-back="{{ back }}">
+  <label>Дата и время <span class="muted small">(часовой пояс {{ tz }})</span>
+    <input type="datetime-local" name="starts_at" value="{{ when }}" required></label>
+  <label>Отклик
+    <select name="application_id">
+      <option value="">— без отклика —</option>
+      {% if app and app.id not in (options | map(attribute='id') | list) %}<option value="{{ app.id }}" selected>{{ app.name }} · {{ app.employer }} · {{ app.account }}</option>{% endif %}
+      {% for o in options %}<option value="{{ o.id }}" {% if app and app.id == o.id %}selected{% endif %}>{{ o.name }} · {{ o.employer }} · {{ o.account }} ({{ label(o.stage) }})</option>{% endfor %}
+    </select></label>
+  <label>Название <span class="muted small">(если без отклика или нужно уточнить: «техническое», «HR»)</span>
+    <input name="title" value="{{ row.title if row else '' }}" maxlength="200"></label>
+  <label>Ссылка на созвон
+    <input name="link" type="url" value="{{ link }}" placeholder="https://" maxlength="500"></label>
+  <label>Заметка
+    <textarea name="note" rows="3" maxlength="2000">{{ row.note if row else '' }}</textarea></label>
+  {% if app and app.note %}<p class="muted small">Заметка отклика: {{ app.note }}</p>{% endif %}
+  <p class="error" hidden></p>
+  <div class="actions">
+    <button>Сохранить</button>
+    {% if row %}<button type="button" class="danger" data-delete>Удалить</button>{% endif %}
+  </div>
+  {% if not row and app %}<p class="muted small">Если этап отклика ещё «отправлен», «просмотрен» или «приглашение», он станет «собеседование».</p>{% endif %}
+</form>
+{% endblock %}

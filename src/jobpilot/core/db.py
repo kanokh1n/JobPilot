@@ -170,6 +170,54 @@ class Database:
             raise LookupError(f"no application {app_id}")
         self.event("note", ref_id=app_id)
 
+    # --- interviews (the calendar) ---
+
+    def interview(self, interview_id: int) -> sqlite3.Row | None:
+        return self._conn.execute("SELECT * FROM interviews WHERE id = ?", (interview_id,)).fetchone()
+
+    def _interview_moves_stage(self, app_id: int | None) -> None:
+        """An interview on the calendar means the application reached that stage, even past a manual
+        "invitation"; a later stage (offer, rejected, one of your own) stays."""
+        row = self.application(app_id) if app_id else None
+        if row is None or row["stage"] not in (stages.SENT, stages.VIEWED, stages.INVITATION):
+            return
+        self._conn.execute(
+            "UPDATE applications SET stage = ?, updated_at = ? WHERE id = ?", (stages.INTERVIEW, _now(), app_id)
+        )
+        self._log_stage(app_id, row["account"], stages.INTERVIEW, "user", "собеседование в календаре")
+
+    def add_interview(self, starts_at: datetime, *, application_id: int | None = None, title: str = "",
+                      link: str = "", note: str = "") -> int:
+        if application_id is not None and self.application(application_id) is None:
+            raise LookupError(f"no application {application_id}")
+        cur = self._conn.execute(
+            "INSERT INTO interviews (application_id, starts_at, title, link, note, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (application_id, starts_at.astimezone(timezone.utc).isoformat(), title, link, note, _now()),
+        )
+        self._interview_moves_stage(application_id)
+        self.event("interview", ref_id=cur.lastrowid)
+        return cur.lastrowid
+
+    def update_interview(self, interview_id: int, starts_at: datetime, *, application_id: int | None,
+                         title: str = "", link: str = "", note: str = "") -> None:
+        if application_id is not None and self.application(application_id) is None:
+            raise LookupError(f"no application {application_id}")
+        cur = self._conn.execute(
+            "UPDATE interviews SET starts_at = ?, application_id = ?, title = ?, link = ?, note = ? WHERE id = ?",
+            (starts_at.astimezone(timezone.utc).isoformat(), application_id, title, link, note, interview_id),
+        )
+        if cur.rowcount == 0:
+            raise LookupError(f"no interview {interview_id}")
+        self._interview_moves_stage(application_id)
+        self.event("interview", ref_id=interview_id)
+
+    def delete_interview(self, interview_id: int) -> None:
+        cur = self._conn.execute("DELETE FROM interviews WHERE id = ?", (interview_id,))
+        if cur.rowcount == 0:
+            raise LookupError(f"no interview {interview_id}")
+        self.event("interview", ref_id=interview_id, deleted=True)
+
     # --- hh.ru applications ---
 
     def _hh_id(self, account: str, vacancy_id: str) -> int | None:

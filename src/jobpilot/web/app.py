@@ -8,7 +8,7 @@ import os
 import secrets
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
@@ -17,12 +17,12 @@ import jinja2
 from aiohttp import web
 
 from ..config import Config
-from ..core import stages
+from ..core import interviews, stages
 from ..core.db import Database
 from ..hh.accounts import load_accounts
 from ..hh.limits import daily_limit
 from ..hh.pipeline import captcha_hold
-from . import queries
+from . import charts, queries
 
 log = logging.getLogger(__name__)
 
@@ -102,6 +102,7 @@ def _templates(tz: str) -> jinja2.Environment:
             return value
 
     env.filters["local"] = local
+    env.globals["bar_path"] = charts.bar_path
     env.globals.update(
         LABELS=stages.LABELS,
         STAGE_ORDER=queries.STAGE_ORDER,
@@ -225,6 +226,7 @@ async def overview(request: web.Request) -> web.Response:
         daily=queries.daily(conn, site.tz),
         changes=queries.recent_changes(conn),
         hold=_hold(site),
+        upcoming=queries.upcoming_interviews(conn, 5),
     )
 
 
@@ -266,7 +268,8 @@ async def application_page(request: web.Request) -> web.Response:
     chat = queries.chat_for_application(db.conn, app_id)
     return _render(request, "application.html", row=row, history=db.stage_history(app_id),
                    custom_stages=queries.custom_stages(db.conn), chat=chat,
-                   messages=db.chat_messages(chat["id"]) if chat else [])
+                   messages=db.chat_messages(chat["id"]) if chat else [],
+                   interviews=queries.interviews_for_application(db.conn, app_id))
 
 
 async def chats_page(request: web.Request) -> web.Response:
@@ -285,6 +288,98 @@ async def chats_page(request: web.Request) -> web.Response:
     return _render(request, "chats.html", chats=queries.chats(db.conn, account, q), chat=chat,
                    messages=messages or [], app=app, account=account, q=q, qs=f"?{params}" if params else "",
                    custom_stages=queries.custom_stages(db.conn))
+
+
+MONTHS = ("январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь",
+          "ноябрь", "декабрь")
+
+
+def _month(value: str | None, today: date) -> date:
+    try:
+        year, month = (value or "").split("-")
+        return date(int(year), int(month), 1)
+    except ValueError:
+        return today.replace(day=1)
+
+
+async def calendar_page(request: web.Request) -> web.Response:
+    """Month grid, the next interviews, and applications at the interview stage still without a date."""
+    site: Site = request.app[SITE]
+    zone = ZoneInfo(site.tz)
+    today = datetime.now(zone).date()
+    first = _month(request.query.get("month"), today)
+    nxt = (first + timedelta(days=32)).replace(day=1)
+    prev = (first - timedelta(days=1)).replace(day=1)
+    start = first - timedelta(days=first.weekday())
+    end = nxt + timedelta(days=(7 - nxt.weekday()) % 7)
+    items: dict[date, list] = {}
+    for row in queries.interviews_between(site.db.conn, datetime.combine(start, datetime.min.time(), zone),
+                                          datetime.combine(end, datetime.min.time(), zone)):
+        items.setdefault(datetime.fromisoformat(row["starts_at"]).astimezone(zone).date(), []).append(row)
+    days = [start + timedelta(days=i) for i in range((end - start).days)]
+    weeks = [[{"day": d, "in_month": d.month == first.month, "today": d == today, "events": items.get(d, [])}
+              for d in days[i:i + 7]] for i in range(0, len(days), 7)]
+    pending = []
+    for app_id, found in interviews.candidates(site.db, site.tz):
+        row = site.db.application(app_id)
+        pending.append({"app": row, "found": found})
+    return _render(
+        request, "calendar.html",
+        weeks=weeks, title=f"{MONTHS[first.month - 1]} {first.year}",
+        prev=prev.strftime("%Y-%m"), next=nxt.strftime("%Y-%m"), this=today.strftime("%Y-%m"),
+        upcoming=queries.upcoming_interviews(site.db.conn, 20), pending=pending,
+    )
+
+
+async def interview_page(request: web.Request) -> web.Response:
+    """Add or edit form; ?app=ID ties a new interview to an application, ?at= prefills the date."""
+    site: Site = request.app[SITE]
+    db = site.db
+    row = None
+    if "id" in request.match_info:
+        row = db.interview(int(request.match_info["id"]))
+        if row is None:
+            raise web.HTTPNotFound(text="нет такого собеседования")
+    app_id = row["application_id"] if row else (int(request.query["app"]) if request.query.get("app", "").isdigit()
+                                                 else None)
+    app = db.application(app_id) if app_id else None
+    if row:
+        when = interviews.local_input(datetime.fromisoformat(row["starts_at"]), site.tz)
+    else:
+        when = request.query.get("at", "")
+        if not when and app is not None:
+            found = interviews.find_when(app["note"], site.tz, datetime.fromisoformat(app["updated_at"]))
+            when = interviews.local_input(found.starts_at, site.tz) if found else ""
+    return _render(
+        request, "interview.html", row=row, app=app, when=when, tz=site.tz,
+        link=row["link"] if row else "", options=queries.linkable_applications(db.conn, app_id),
+        back=_safe_next(request.query.get("back")) if request.query.get("back") else "/calendar",
+    )
+
+
+async def stats_page(request: web.Request) -> web.Response:
+    site: Site = request.app[SITE]
+    conn = site.db.conn
+    try:
+        days = int(request.query.get("days", "30"))
+    except ValueError:
+        days = 30
+    days = days if days in (7, 30, 90) else 30
+    names = queries.accounts(conn, list(site.configured_accounts()))
+    account = request.query.get("account", "")
+    account = account if account in names else ""
+    shown = [account] if account else names
+    applied = queries.applied_by_day(conn, site.tz, days, names)
+    applied_chart = charts.stacked(applied["days"], {a: applied["series"].get(a, [0] * days) for a in shown},
+                                   {a: a for a in shown})
+    answers = queries.reactions_by_day(conn, site.tz, days, account)
+    answers_chart = charts.stacked(answers["days"], answers["series"],
+                                   {key: label for key, label, _ in queries.REACTIONS})
+    return _render(
+        request, "stats.html", days=days, account=account, applied=applied_chart, answers=answers_chart,
+        funnel=queries.funnel(conn, site.tz, days, account), levels=queries.REACHED,
+        colors={a: f"c{i % 2 + 1}" for i, a in enumerate(names)},
+    )
 
 
 # --- api for the inline edits ---
@@ -331,6 +426,47 @@ async def api_note(request: web.Request) -> web.Response:
     return web.json_response(_row_json(db.application(app_id)))
 
 
+def _interview_fields(site: Site, body: dict) -> dict:
+    try:
+        starts_at = interviews.parse_local(str(body.get("starts_at", "")), site.tz)
+    except ValueError:
+        raise web.HTTPBadRequest(text="дата и время нужны в виде 2026-10-24T15:00")
+    app = body.get("application_id")
+    if app in ("", None):
+        app = None
+    elif not str(app).isdigit():
+        raise web.HTTPBadRequest(text="application_id")
+    link = str(body.get("link", "")).strip()[:500]
+    if link and not link.startswith(("https://", "http://")):
+        raise web.HTTPBadRequest(text="ссылка должна начинаться с https://")
+    return {"starts_at": starts_at, "application_id": int(app) if app is not None else None,
+            "title": str(body.get("title", "")).strip()[:200], "link": link,
+            "note": str(body.get("note", "")).strip()[:2000]}
+
+
+async def api_interview_save(request: web.Request) -> web.Response:
+    site: Site = request.app[SITE]
+    fields = _interview_fields(site, await _json_body(request))
+    try:
+        if "id" in request.match_info:
+            interview_id = int(request.match_info["id"])
+            site.db.update_interview(interview_id, fields.pop("starts_at"), **fields)
+        else:
+            interview_id = site.db.add_interview(fields.pop("starts_at"), **fields)
+    except LookupError:
+        raise web.HTTPNotFound()
+    return web.json_response({"id": interview_id})
+
+
+async def api_interview_delete(request: web.Request) -> web.Response:
+    await _json_body(request)
+    try:
+        request.app[SITE].db.delete_interview(int(request.match_info["id"]))
+    except LookupError:
+        raise web.HTTPNotFound()
+    return web.json_response({"ok": True})
+
+
 async def api_last_event(request: web.Request) -> web.Response:
     return web.json_response({"id": queries.last_event_id(request.app[SITE].db.conn)})
 
@@ -349,6 +485,13 @@ def build_app(site: Site) -> web.Application:
         web.get(r"/application/{id:\d+}", application_page),
         web.get("/chats", chats_page),
         web.get(r"/chats/{id:\d+}", chats_page),
+        web.get("/calendar", calendar_page),
+        web.get("/calendar/new", interview_page),
+        web.get(r"/calendar/{id:\d+}", interview_page),
+        web.get("/stats", stats_page),
+        web.post("/api/interviews", api_interview_save),
+        web.post(r"/api/interviews/{id:\d+}", api_interview_save),
+        web.post(r"/api/interviews/{id:\d+}/delete", api_interview_delete),
         web.post(r"/api/applications/{id:\d+}/stage", api_stage),
         web.post(r"/api/applications/{id:\d+}/note", api_note),
         web.get("/api/last-event", api_last_event),
@@ -370,6 +513,9 @@ def main() -> None:
         accounts_path=cfg.accounts_path,
         session_hours=int(os.environ.get("WEB_SESSION_HOURS", "24")),
     )
+    moved = interviews.import_once(site.db, site.tz)
+    if moved:
+        log.info("calendar: %d interview dates moved from notes", moved)
     port = int(os.environ.get("WEB_PORT", "8080"))
     log.info("site on port %d", port)
     web.run_app(build_app(site), host=os.environ.get("WEB_HOST", "0.0.0.0"), port=port, access_log=None,

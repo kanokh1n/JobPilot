@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import funnel, bars, hold_banner, pill %}
+{% from "_macros.html" import funnel, bars, hold_banner, pill, interview_line %}
 {% block body %}
 {{ hold_banner(hold) }}
 <section class="cards">
@@ -9,7 +9,14 @@
   <div class="card"><span class="n">{{ total.answered }}</span><span class="l">ответили ({{ total.answer_rate }}%)</span></div>
 </section>
 
-<h2>Воронка по аккаунтам</h2>
+{% if upcoming %}
+<section class="panel upcoming">
+  <h3>Ближайшие собеседования <a class="small" href="/calendar">календарь</a></h3>
+  <ul class="changes ivs">{% for i in upcoming %}{{ interview_line(i) }}{% endfor %}</ul>
+</section>
+{% endif %}
+
+<h2>Воронка по аккаунтам <a class="small" href="/stats">все графики</a></h2>
 <div class="grid2">
   {% for name in accounts %}
   {% set s = per_account[name] %}

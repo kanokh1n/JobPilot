@@ -57,3 +57,40 @@
   {% if app.stage_manual %}<option value="__auto__">↺ вернуть автомат</option>{% endif %}
 </select>
 {%- endmacro %}
+
+{% macro chart(c, colors, label) -%}
+{% if c.empty %}
+<p class="muted">За этот период пусто.</p>
+{% else %}
+{% if c.series | length > 1 %}
+<ul class="legend">
+  {% for key, name, total in c.series %}<li><i class="sw {{ colors[key] }}"></i>{{ name }} <b>{{ total }}</b></li>{% endfor %}
+</ul>
+{% endif %}
+<svg class="chart" viewBox="0 0 {{ c.width }} {{ c.height }}" role="img" aria-label="{{ label }}">
+  {% for y, v in c.ticks %}
+  <line class="grid{{ ' base' if v == 0 else '' }}" x1="{{ c.left }}" x2="{{ c.right }}" y1="{{ y | round(1) }}" y2="{{ y | round(1) }}"/>
+  <text class="tick" x="{{ c.left - 6 }}" y="{{ (y + 4) | round(1) }}" text-anchor="end">{{ v }}</text>
+  {% endfor %}
+  {% for col in c.columns %}
+  <g class="day" data-tip="{{ col.tip }}">
+    <rect class="hit" x="{{ col.x | round(1) }}" y="0" width="{{ col.w | round(1) }}" height="{{ c.base }}"/>
+    {% for s in col.segments %}<path class="{{ colors[s.key] }}" d="{{ bar_path(col.x, s.y, col.w, s.h, s.top) }}"/>{% endfor %}
+    {% if col.label %}<text class="tick" x="{{ (col.x + col.w / 2) | round(1) }}" y="{{ c.height - 6 }}" text-anchor="middle">{{ col.label }}</text>{% endif %}
+  </g>
+  {% endfor %}
+</svg>
+{% endif %}
+{%- endmacro %}
+
+{% macro interview_line(i, show_app=True) -%}
+<li class="iv">
+  <a class="when nowrap" href="/calendar/{{ i.id }}">{{ i.starts_at | local('%d.%m %H:%M') }}</a>
+  <span>
+    {%- if show_app and i.application_id %}<a href="/application/{{ i.application_id }}">{{ i.name }}</a> <span class="muted">· {{ i.employer }} · {{ i.account }}</span>{% endif %}
+    {%- if i.title %} <b>{{ i.title }}</b>{% elif show_app and not i.application_id %} <span class="muted">без отклика</span>{% endif %}
+    {%- if i.link %} · <a class="ext" href="{{ i.link }}" target="_blank" rel="noopener">ссылка на созвон ↗</a>{% endif %}
+    {%- if i.note %}<div class="muted small">{{ i.note }}</div>{% endif -%}
+  </span>
+</li>
+{%- endmacro %}

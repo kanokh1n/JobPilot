@@ -63,6 +63,17 @@ def main() -> None:
         from .web.app import main as web
 
         web()
+    elif command == "interviews-import":
+        from .core.db import Database
+        from .core.interviews import import_from_notes
+
+        cfg = Config.from_env(need_telegram=False)
+        dry = "--dry-run" in sys.argv[2:]
+        for app_id, found in import_from_notes(Database(cfg.db_path), cfg.tz, dry_run=dry):
+            print(app_id, found.starts_at.strftime("%d.%m.%Y %H:%M"), "" if found.has_time else "(без времени)",
+                  found.link)
+        if dry:
+            print("--dry-run: nothing written")
     elif command == "db-info":
         from .core.info import main as db_info
 
@@ -98,7 +109,7 @@ def main() -> None:
         else:
             cli.run(account, live="--live" in sys.argv[3:], any_time="--any-time" in sys.argv[3:])
     else:
-        raise SystemExit("Usage: jobpilot [run|login|web|db-info|hh-login|hh-search|hh-run|hh-remind|hh-export|hh-refresh|hh-explain|hh-dump|hh-chats|hh-chats-dump] [account]")
+        raise SystemExit("Usage: jobpilot [run|login|web|db-info|interviews-import|hh-login|hh-search|hh-run|hh-remind|hh-export|hh-refresh|hh-explain|hh-dump|hh-chats|hh-chats-dump] [account]")
 
 
 if __name__ == "__main__":
