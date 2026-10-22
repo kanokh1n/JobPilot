@@ -164,6 +164,33 @@ CREATE INDEX outbox_status ON outbox (status, id);
 """
 
 
+# v5: vacancies read from job-site feeds (RSS/Atom), per source and country; read-only, like tg_posts.
+V5 = """
+CREATE TABLE feed_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,                       -- feed key, see feeds/sources.py
+    country TEXT NOT NULL DEFAULT '',
+    external_id TEXT NOT NULL,                  -- guid of the item
+    hash TEXT NOT NULL,                         -- title + company, to drop the same job from a second site
+    title TEXT NOT NULL,
+    company TEXT NOT NULL DEFAULT '',
+    location TEXT NOT NULL DEFAULT '',
+    url TEXT NOT NULL,
+    summary TEXT NOT NULL DEFAULT '',
+    categories TEXT NOT NULL DEFAULT '',
+    published_at TEXT,
+    created_at TEXT NOT NULL,
+    matched INTEGER NOT NULL DEFAULT 0,         -- 1 = passed the feed words: goes to Telegram
+    sent INTEGER NOT NULL DEFAULT 0,
+    verdict INTEGER,
+    UNIQUE (source, external_id)
+);
+CREATE INDEX feed_jobs_hash ON feed_jobs (hash, created_at);
+CREATE INDEX feed_jobs_order ON feed_jobs (created_at);
+CREATE INDEX feed_jobs_unsent ON feed_jobs (sent, matched)
+"""
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -213,14 +240,18 @@ def _v4(conn: sqlite3.Connection) -> None:
     _run(conn, V4)
 
 
+def _v5(conn: sqlite3.Connection) -> None:
+    _run(conn, V5)
+
+
 # Index + 1 is the version a step brings the file to.
-STEPS: list[Callable[[sqlite3.Connection], None]] = [_v1, _v2, _v3, _v4]
+STEPS: list[Callable[[sqlite3.Connection], None]] = [_v1, _v2, _v3, _v4, _v5]
 VERSION = len(STEPS)
 
 
 def _has_data(conn: sqlite3.Connection) -> bool:
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-    return bool(tables & {"posts", "hh_applications", "tg_posts", "applications"})
+    return bool(tables & {"posts", "hh_applications", "tg_posts", "applications", "feed_jobs"})
 
 
 def migrate(conn: sqlite3.Connection, path: Path | None = None) -> int:

@@ -20,6 +20,7 @@
     <a href="/calendar" {% if path.startswith('/calendar') %}class="on"{% endif %}>Календарь</a>
     <a href="/stats" {% if path == '/stats' %}class="on"{% endif %}>Графики</a>
     <a href="/telegram" {% if path == '/telegram' %}class="on"{% endif %}>Телеграм</a>
+    <a href="/feeds" {% if path == '/feeds' %}class="on"{% endif %}>Ленты</a>
     <a href="/settings" {% if path == '/settings' %}class="on"{% endif %}>Настройки</a>
   </nav>
   <form method="post" action="/logout"><button class="link">Выйти</button></form>

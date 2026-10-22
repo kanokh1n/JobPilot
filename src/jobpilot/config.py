@@ -26,6 +26,7 @@ class Config:
     data_dir: Path
     hh_user_agent: str
     hh_token: str | None
+    feeds_user_agent: str = "JobPilot/0.1 (personal job alerts; RSS reader)"
 
     @property
     def session_path(self) -> Path:
@@ -58,4 +59,6 @@ class Config:
             data_dir=data_dir,
             hh_user_agent=os.environ.get("HH_USER_AGENT", "JobPilot/0.1 (set-your-email@example.com)"),
             hh_token=os.environ.get("HH_APP_TOKEN", "").strip() or None,
+            feeds_user_agent=os.environ.get("FEEDS_USER_AGENT", "").strip()
+            or "JobPilot/0.1 (personal job alerts; RSS reader)",
         )

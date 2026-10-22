@@ -21,6 +21,7 @@ from aiohttp import web
 from ..config import Config
 from ..core import interviews, stages
 from ..core.db import Database
+from ..feeds import sources as feed_sources
 from ..hh import accounts as hh_accounts
 from ..hh.accounts import load_accounts
 from ..hh.limits import daily_limit
@@ -456,6 +457,48 @@ async def settings_page(request: web.Request) -> web.Response:
                    strikes=int(db.get("hh_captcha_strikes", "0") or 0), file=str(site.accounts_path))
 
 
+# --- job-site feeds (v9): the worker reads them, the site shows the jobs and edits the feed list ---
+
+async def feeds_page(request: web.Request) -> web.Response:
+    site: Site = request.app[SITE]
+    db = site.db
+    show = request.query.get("show", "matched")
+    show = show if show in queries.FEED_SHOW else "matched"
+    verdict = request.query.get("verdict", "")
+    verdict = verdict if verdict in queries.VERDICTS else ""
+    country, source = request.query.get("country", "")[:3], request.query.get("source", "")[:32]
+    q = request.query.get("q", "").strip()[:100]
+    try:
+        page = max(int(request.query.get("page", "1")), 1)
+    except ValueError:
+        page = 1
+    jobs, total = queries.feed_jobs(db.conn, show=show, country=country, source=source, verdict=verdict, q=q,
+                                    page=page)
+    pages = max((total + queries.FEED_PAGE - 1) // queries.FEED_PAGE, 1)
+    params = {"show": show, "country": country, "source": source, "verdict": verdict, "q": q}
+
+    def page_url(n: int) -> str:
+        return "/feeds?" + urlencode({k: v for k, v in {**params, "page": n}.items() if v})
+
+    def without(key: str) -> str:
+        rest = urlencode({k: v for k, v in params.items() if v and k != key})
+        return "/feeds" + (f"?{rest}" if rest else "")
+
+    counts = queries.feed_by_source(db.conn, site.tz)
+    feeds = [{"source": s, "state": feed_sources.state(db, s.key), "counts": counts.get(s.key)}
+             for s in feed_sources.all_sources(db)]
+    names = {f["source"].key: f["source"].name for f in feeds}
+    return _render(
+        request, "feeds.html", jobs=jobs, total=total, page=page, pages=pages, page_url=page_url,
+        without=without, show=show, shows=queries.FEED_SHOW, verdict=verdict, verdicts=queries.VERDICTS,
+        country=country, source=source, q=q, countries=queries.feed_countries(db.conn), names=names,
+        country_name=feed_sources.country_name, feeds=feeds, summary=queries.feed_summary(db.conn, site.tz),
+        include=feed_sources.words(db, feed_sources.INCLUDE), exclude=feed_sources.words(db, feed_sources.EXCLUDE),
+        feeds_paused=db.get(feed_sources.PAUSED) == "1", mode=db.get("mode"), digest_time=db.get("digest_time"),
+        extra_lines=feed_sources.extra_lines(db), hold=_hold(site), min_interval=feed_sources.MIN_INTERVAL,
+    )
+
+
 # --- api for the inline edits ---
 
 def _row_json(row) -> dict:
@@ -708,6 +751,82 @@ async def api_outbox(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+async def api_feeds(request: web.Request) -> web.Response:
+    """Pause and words of the feeds, and the feed list: built-in ones (on/off, minutes, address) and added ones."""
+    db: Database = request.app[SITE].db
+    body = await _json_body(request)
+    if "paused" in body:
+        db.set(feed_sources.PAUSED, "1" if _flag(body["paused"]) else "0")
+    for name, key in (("include", feed_sources.INCLUDE), ("exclude", feed_sources.EXCLUDE)):
+        if name in body:
+            db.set_keywords(key, _words(body[name]))
+    changes = feed_sources.overrides(db)
+    for source in feed_sources.BUILTIN:
+        change = dict(changes.get(source.key) or {})
+        if f"enabled:{source.key}" in body:
+            change["enabled"] = _flag(body[f"enabled:{source.key}"])
+        if f"interval:{source.key}" in body:
+            try:
+                minutes = int(body[f"interval:{source.key}"])
+            except (TypeError, ValueError):
+                raise web.HTTPBadRequest(text=f"{source.name}: интервал нужен числом минут")
+            if not feed_sources.MIN_INTERVAL <= minutes <= feed_sources.MAX_INTERVAL:
+                raise web.HTTPBadRequest(text=f"{source.name}: интервал от {feed_sources.MIN_INTERVAL} минут"
+                                              f" до {feed_sources.MAX_INTERVAL // 1440} дней")
+            change["interval"] = minutes
+        if f"url:{source.key}" in body:
+            url = str(body[f"url:{source.key}"]).strip()
+            if url and not feed_sources.valid_url(url):
+                raise web.HTTPBadRequest(text=f"{source.name}: адрес ленты должен начинаться с https://")
+            if url and url != source.url:
+                change["url"] = url
+            else:
+                change.pop("url", None)
+        # Only what differs from the built-in feed is kept.
+        change = {k: v for k, v in change.items() if v != getattr(source, k)}
+        if change:
+            changes[source.key] = change
+        else:
+            changes.pop(source.key, None)
+    db.set(feed_sources.OVERRIDES, json.dumps(changes, ensure_ascii=False))
+    if "extra" in body:
+        good, bad = feed_sources.parse_extra_lines(str(body["extra"]))
+        if bad:
+            raise web.HTTPBadRequest(text="не понял строки: " + "; ".join(bad[:3])
+                                     + ". Нужно: RS | Название | https://адрес-ленты | минуты")
+        feed_sources.save_extra(db, good[:30])
+    db.event("settings", part="feeds")
+    return web.json_response({"ok": True})
+
+
+async def api_feed_now(request: web.Request) -> web.Response:
+    """Read a feed at the worker's next look (within 5 minutes), but not sooner than MIN_INTERVAL after the last read."""
+    db: Database = request.app[SITE].db
+    await _json_body(request)
+    key = request.match_info["key"]
+    if key not in {s.key for s in feed_sources.all_sources(db)}:
+        raise web.HTTPNotFound(text="нет такой ленты")
+    state = feed_sources.state(db, key)
+    now = datetime.now(timezone.utc)
+    earliest = now
+    if state.get("last_at"):
+        earliest = max(now, datetime.fromisoformat(state["last_at"]) + timedelta(minutes=feed_sources.MIN_INTERVAL))
+    state["next_at"] = earliest.isoformat()
+    feed_sources.save_state(db, key, state)
+    return web.json_response({"next_at": state["next_at"]})
+
+
+async def api_feed_verdict(request: web.Request) -> web.Response:
+    db: Database = request.app[SITE].db
+    body = await _json_body(request)
+    value = body.get("verdict")
+    if value not in (0, 1, None):
+        raise web.HTTPBadRequest(text="verdict: 1, 0 или null")
+    if not db.feed_set_verdict(int(request.match_info["id"]), value):
+        raise web.HTTPNotFound()
+    return web.json_response({"verdict": value})
+
+
 async def api_last_event(request: web.Request) -> web.Response:
     return web.json_response({"id": queries.last_event_id(request.app[SITE].db.conn)})
 
@@ -732,6 +851,10 @@ def build_app(site: Site) -> web.Application:
         web.get("/stats", stats_page),
         web.get("/telegram", telegram_page),
         web.get("/settings", settings_page),
+        web.get("/feeds", feeds_page),
+        web.post("/api/feeds", api_feeds),
+        web.post(r"/api/feeds/{key:[a-z0-9][a-z0-9_-]{1,31}}/now", api_feed_now),
+        web.post(r"/api/feeds/jobs/{id:\d+}/verdict", api_feed_verdict),
         web.post("/api/telegram", api_telegram),
         web.post(r"/api/telegram/posts/{id:\d+}/verdict", api_tg_verdict),
         web.post("/api/telegram/digest", api_tg_digest),

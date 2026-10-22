@@ -132,12 +132,22 @@ def build_dispatcher(
     @router.message(Command("status"))
     async def status(message: Message) -> None:
         s = db.stats()
-        await message.answer(f"Всего найдено: {s['total']}, ждут отправки: {s['pending']}")
+        feeds = db.conn.execute(
+            "SELECT COUNT(*) AS n, COALESCE(SUM(sent = 0 AND matched = 1), 0) AS pending FROM feed_jobs"
+        ).fetchone()
+        await message.answer(f"Телеграм: найдено {s['total']}, ждут отправки {s['pending']}\n"
+                             f"Сайты вакансий: найдено {feeds['n']}, ждут отправки {feeds['pending']}")
 
     @router.callback_query(F.data.startswith("v:"))
     async def verdict(query: CallbackQuery) -> None:
         _, post_id, value = query.data.split(":")
         db.set_verdict(int(post_id), int(value))
+        await query.answer("Запомнил")
+
+    @router.callback_query(F.data.startswith("fv:"))
+    async def feed_verdict(query: CallbackQuery) -> None:
+        _, job_id, value = query.data.split(":")
+        db.feed_set_verdict(int(job_id), int(value))
         await query.answer("Запомнил")
 
     dp = Dispatcher()

@@ -183,7 +183,7 @@ document.querySelectorAll(".chat-open .thread, .panel .thread").forEach((t) => {
       const post = btn.closest(".post");
       const value = btn.classList.contains("on") ? null : Number(btn.dataset.verdict);  // a second click clears it
       try {
-        await send(`/api/telegram/posts/${post.dataset.id}/verdict`, { verdict: value });
+        await send(post.dataset.verdictUrl || `/api/telegram/posts/${post.dataset.id}/verdict`, { verdict: value });
         post.querySelectorAll("[data-verdict]").forEach((b) => b.classList.toggle("on", value !== null && Number(b.dataset.verdict) === value));
       } catch (err) { btn.classList.add("failed"); }
     });

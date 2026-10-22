@@ -158,3 +158,25 @@ per pass, search queries, include/exclude words and excluded companies. Only wha
 Everything lives in the `settings` table, so no restart is needed: the bot checks the digest time and a
 digest request every 30 s, the userbot re-reads the sources every 5 minutes, and an hh pass loads the
 account's settings when it starts (the `hh-*` commands use them too). The bot commands keep working.
+
+## Job-site feeds (v9): Serbia
+
+The worker reads the RSS feeds of job sites and keeps the vacancies in the table `feed_jobs` (database v5).
+Read-only: nothing is posted to the sites, you apply there by hand. Built in for Serbia: HelloWorld.rs
+(every 30 min), Startit Poslovi (every 6 h) and Poslovi Infostud, IT category (every hour; the address of
+the IT feed is not verified yet, fix it on the site if it shows an error). Each feed has a country, so other
+countries are added the same way: on the "Ленты" page as `DE | Name | https://feed-url | minutes`.
+
+Politeness: one feed at a time with a few seconds between them, never more often than every 15 minutes
+or than the feed's own `<ttl>`, `If-None-Match`/`If-Modified-Since`, `Retry-After` on 429/503, a pause that
+doubles after each error (up to a day), at most 2 MB per answer. The next read time is stored, so a restart
+does not read the sites again. `FEEDS_USER_AGENT` in `.env` changes the User-Agent.
+
+A vacancy matches when its title or categories contain one of the feed words and none of the excluded
+ones (own words, on the "Ленты" page; in descriptions "go" is mostly the verb). Matching ones go to
+Telegram by the mode from the Telegram page: at once (more than 5 from one read as one list) or in the
+daily digest, after the Telegram posts. Others are kept and shown on the site under "все из лент".
+👍/👎 work in the bot and on the site. After 3 failed reads in a row the bot says so once.
+
+`jobpilot feeds-check [feed]` reads the feeds once and prints what they hold, writing nothing
+(on the server: `docker compose run --rm jobpilot jobpilot feeds-check`).

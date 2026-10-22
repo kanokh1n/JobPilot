@@ -8,6 +8,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from .config import Config
 from .db import Database
+from .feeds.scheduler import schedule_feeds
 from .hh.scheduler import schedule_hh
 from .tg.bot import build_dispatcher, create_bot
 from .tg.notifier import Notifier
@@ -62,6 +63,7 @@ async def run() -> None:
         raise SystemExit("Userbot is not signed in. Run: jobpilot login")
     refresh_task = await start_listening(client, cfg, db, notifier)  # keep a reference while running
     schedule_hh(scheduler, cfg, db, notifier)
+    schedule_feeds(scheduler, cfg, db, notifier)
 
     await asyncio.gather(dp.start_polling(bot), client.run_until_disconnected())
 
@@ -88,6 +90,11 @@ def main() -> None:
                   found.link)
         if dry:
             print("--dry-run: nothing written")
+    elif command == "feeds-check":
+        from .feeds.scheduler import check
+
+        cfg = Config.from_env(need_telegram=False)
+        asyncio.run(check(cfg, Database(cfg.db_path), sys.argv[2] if len(sys.argv) > 2 else None))
     elif command == "db-info":
         from .core.info import main as db_info
 
@@ -123,7 +130,7 @@ def main() -> None:
         else:
             cli.run(account, live="--live" in sys.argv[3:], any_time="--any-time" in sys.argv[3:])
     else:
-        raise SystemExit("Usage: jobpilot [run|login|web|db-info|interviews-import|hh-login|hh-search|hh-run|hh-remind|hh-export|hh-refresh|hh-explain|hh-dump|hh-chats|hh-chats-dump] [account]")
+        raise SystemExit("Usage: jobpilot [run|login|web|db-info|feeds-check|interviews-import|hh-login|hh-search|hh-run|hh-remind|hh-export|hh-refresh|hh-explain|hh-dump|hh-chats|hh-chats-dump] [account]")
 
 
 if __name__ == "__main__":

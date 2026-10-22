@@ -374,3 +374,63 @@ def tg_summary(conn: sqlite3.Connection, tz: str) -> dict:
         (_day_start(tz), _day_start(tz, 6)),
     ).fetchone()
     return dict(row)
+
+
+# --- job-site feeds (v9) ---
+
+FEED_PAGE = 50
+FEED_SHOW = {"matched": "подходят под слова", "all": "все из лент", "other": "не подошли"}
+
+
+def feed_jobs(conn: sqlite3.Connection, *, show: str = "matched", country: str = "", source: str = "",
+              verdict: str = "", q: str = "", page: int = 1) -> tuple[list[sqlite3.Row], int]:
+    where, args = [], []
+    if show == "matched":
+        where.append("matched = 1")
+    elif show == "other":
+        where.append("matched = 0")
+    if country:
+        where.append("country = ?")
+        args.append(country)
+    if source:
+        where.append("source = ?")
+        args.append(source)
+    if verdict == "new":
+        where.append("verdict IS NULL")
+    elif verdict in ("0", "1"):
+        where.append("verdict = ?")
+        args.append(int(verdict))
+    if q:
+        where.append("(title LIKE ? OR company LIKE ? OR summary LIKE ? OR categories LIKE ?)")
+        args += [f"%{q}%"] * 4
+    sql_where = f"WHERE {' AND '.join(where)}" if where else ""
+    total = conn.execute(f"SELECT COUNT(*) FROM feed_jobs {sql_where}", args).fetchone()[0]
+    rows = conn.execute(
+        f"SELECT * FROM feed_jobs {sql_where} ORDER BY id DESC LIMIT ? OFFSET ?",
+        [*args, FEED_PAGE, (max(page, 1) - 1) * FEED_PAGE],
+    ).fetchall()
+    return rows, total
+
+
+def feed_by_source(conn: sqlite3.Connection, tz: str) -> dict[str, sqlite3.Row]:
+    rows = conn.execute(
+        "SELECT source, COUNT(*) AS n, COALESCE(SUM(matched), 0) AS matched, COALESCE(SUM(created_at >= ?), 0) AS week,"
+        " MAX(created_at) AS last FROM feed_jobs GROUP BY source",
+        (_day_start(tz, 6),),
+    ).fetchall()
+    return {r["source"]: r for r in rows}
+
+
+def feed_countries(conn: sqlite3.Connection) -> list[str]:
+    return [r[0] for r in conn.execute("SELECT DISTINCT country FROM feed_jobs ORDER BY country")]
+
+
+def feed_summary(conn: sqlite3.Connection, tz: str) -> dict:
+    row = conn.execute(
+        "SELECT COALESCE(SUM(matched = 1 AND created_at >= ?), 0) AS today,"
+        " COALESCE(SUM(matched = 1 AND created_at >= ?), 0) AS week,"
+        " COALESCE(SUM(matched = 1 AND sent = 0), 0) AS pending, COALESCE(SUM(verdict = 1), 0) AS liked,"
+        " COUNT(*) AS total FROM feed_jobs",
+        (_day_start(tz), _day_start(tz, 6)),
+    ).fetchone()
+    return dict(row)

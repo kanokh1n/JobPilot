@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from ..filters import Filters
@@ -18,6 +18,19 @@ DEFAULTS = {
     "digest_time": "09:00",
     "paused": "0",
 }
+
+
+@dataclass
+class FeedJob:
+    id: int
+    source: str
+    country: str
+    title: str
+    company: str
+    location: str
+    url: str
+    summary: str
+    matched: bool = True
 
 
 @dataclass
@@ -106,6 +119,49 @@ class Database:
             "SELECT COUNT(*) AS total, COALESCE(SUM(sent = 0), 0) AS pending FROM tg_posts"
         ).fetchone()
         return {"total": row["total"], "pending": row["pending"]}
+
+    # --- job-site feeds (v5) ---
+
+    def feed_job_known(self, source: str, external_id: str) -> bool:
+        return self._conn.execute(
+            "SELECT 1 FROM feed_jobs WHERE source = ? AND external_id = ?", (source, external_id)
+        ).fetchone() is not None
+
+    def add_feed_job(self, source: str, country: str, item, digest: str, matched: bool,
+                     dedupe_days: int = 30) -> FeedJob | None:
+        """Store a feed item; None when it is already stored, or the same job came from another feed lately."""
+        if self.feed_job_known(source, item.external_id):
+            return None
+        since = (datetime.now(timezone.utc) - timedelta(days=dedupe_days)).isoformat()
+        if self._conn.execute("SELECT 1 FROM feed_jobs WHERE hash = ? AND created_at >= ?",
+                              (digest, since)).fetchone():
+            return None
+        cur = self._conn.execute(
+            "INSERT OR IGNORE INTO feed_jobs (source, country, external_id, hash, title, company, location, url,"
+            " summary, categories, published_at, created_at, matched) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (source, country, item.external_id, digest, item.title, item.company, item.location, item.url,
+             item.summary, ", ".join(item.categories), item.published_at, _now(), int(matched)),
+        )
+        if cur.rowcount == 0:
+            return None
+        self.event("feed_job", ref_id=cur.lastrowid, source=source, matched=matched)
+        return FeedJob(cur.lastrowid, source, country, item.title, item.company, item.location, item.url,
+                       item.summary, matched)
+
+    def feed_unsent(self) -> list[FeedJob]:
+        rows = self._conn.execute(
+            "SELECT * FROM feed_jobs WHERE sent = 0 AND matched = 1 ORDER BY id"
+        ).fetchall()
+        return [FeedJob(r["id"], r["source"], r["country"], r["title"], r["company"], r["location"], r["url"],
+                        r["summary"]) for r in rows]
+
+    def feed_mark_sent(self, ids: list[int]) -> None:
+        self._conn.executemany("UPDATE feed_jobs SET sent = 1 WHERE id = ?", [(i,) for i in ids])
+
+    def feed_set_verdict(self, job_id: int, verdict: int | None) -> bool:
+        return self._conn.execute(
+            "UPDATE feed_jobs SET verdict = ? WHERE id = ?", (verdict, job_id)
+        ).rowcount > 0
 
     # --- applications and their stages ---
 
