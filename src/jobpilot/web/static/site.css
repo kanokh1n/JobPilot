@@ -183,3 +183,30 @@ button.danger { background: var(--rejected); }
   .cal .ev b { display: block; }
   .cal .ev { font-size: 11px; white-space: normal; max-height: 3.4em; }
 }
+
+/* --- v6: Telegram and settings --- */
+.form { display: grid; gap: 10px; align-content: start; }
+.form label { display: grid; gap: 4px; }
+.form label.check { display: flex; gap: 8px; align-items: baseline; }
+.form textarea { width: 100%; resize: vertical; }
+.form .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
+.form h3 { margin: 0; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.form p { margin: 0; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+button.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); }
+button.ghost.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--panel)); }
+button:disabled { opacity: .6; cursor: default; }
+.tags { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.tags li { background: var(--bg); border-radius: 999px; padding: 2px 10px; font-size: 13px; }
+.chip { background: var(--bg); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; font-size: 13px; color: var(--text); }
+table.small-table { min-width: 0; font-size: 14px; }
+.posts { display: grid; gap: 10px; }
+.post { display: grid; gap: 8px; }
+.post-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.post-head .ext { margin-left: auto; color: var(--muted); }
+.post .text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.post summary { cursor: pointer; list-style: none; }
+.post summary::-webkit-details-marker { display: none; }
+.post details[open] summary::after { content: ""; }
+.verdict { display: flex; gap: 8px; }
+.verdict button { padding: 3px 10px; font-size: 13px; }

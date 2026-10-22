@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import logging
 import os
+import re
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -19,9 +21,11 @@ from aiohttp import web
 from ..config import Config
 from ..core import interviews, stages
 from ..core.db import Database
+from ..hh import accounts as hh_accounts
 from ..hh.accounts import load_accounts
 from ..hh.limits import daily_limit
-from ..hh.pipeline import captcha_hold
+from ..hh.pipeline import captcha_hold, clear_captcha
+from ..tg import sources as tg_sources
 from . import charts, queries
 
 log = logging.getLogger(__name__)
@@ -40,6 +44,8 @@ class Site:
     tz: str
     accounts_path: Path
     session_hours: int = 24
+    tg_folder: str | None = None              # TG_FOLDER and TG_SOURCES from .env, shown next to the site's own
+    tg_sources: tuple[str, ...] = ()
     failures: dict[str, list[float]] = field(default_factory=dict)
 
     # --- session cookie: "<expiry>.<hmac>" ---
@@ -65,8 +71,11 @@ class Site:
         self.failures[ip] = recent
         return len(recent) >= MAX_FAILURES
 
-    def configured_accounts(self) -> dict:
-        return load_accounts(self.accounts_path) if self.accounts_path.exists() else {}
+    def configured_accounts(self, *, file_only: bool = False) -> dict:
+        """Accounts from accounts.toml with the changes made on the settings page (or without them)."""
+        if not self.accounts_path.exists():
+            return {}
+        return load_accounts(self.accounts_path, None if file_only else self.db)
 
 
 SITE = web.AppKey("site", Site)
@@ -210,7 +219,8 @@ def _table_context(request: web.Request, f: queries.Filter) -> dict:
 def _hold(site: Site) -> dict:
     until = captcha_hold(site.db, datetime.now(timezone.utc))
     return {"paused": site.db.get("paused") == "1", "captcha_until": until.isoformat() if until else None,
-            "resume_lang": site.db.get("resume_lang", "ru")}
+            "resume_lang": site.db.get("resume_lang", "ru"),
+            "accounts_paused": [n for n in site.configured_accounts() if hh_accounts.paused(site.db, n)]}
 
 
 async def overview(request: web.Request) -> web.Response:
@@ -251,6 +261,7 @@ async def account_page(request: web.Request) -> web.Response:
         limit=limit,
         per_pass=account.per_pass if account else None,
         hold=_hold(site),
+        account_paused=hh_accounts.paused(site.db, name),
         **_table_context(request, f),
     )
 
@@ -382,6 +393,62 @@ async def stats_page(request: web.Request) -> web.Response:
     )
 
 
+# --- Telegram and settings (v6): the site writes settings, the bot and the workers read them ---
+
+def _today_limit(site: Site, account) -> int | None:
+    first = site.db.get(f"hh_start:{account.name}")
+    return daily_limit(account, datetime.fromisoformat(first), datetime.now(ZoneInfo(site.tz))) if first else None
+
+
+async def telegram_page(request: web.Request) -> web.Response:
+    site: Site = request.app[SITE]
+    db = site.db
+    verdict = request.query.get("verdict", "")
+    verdict = verdict if verdict in queries.VERDICTS else ""
+    source, q = request.query.get("source", ""), request.query.get("q", "").strip()
+    try:
+        page = max(int(request.query.get("page", "1")), 1)
+    except ValueError:
+        page = 1
+    posts, total = queries.tg_posts(db.conn, verdict, source, q, page)
+    pages = max((total + queries.TG_PAGE - 1) // queries.TG_PAGE, 1)
+
+    def page_url(n: int) -> str:
+        return "/telegram?" + urlencode({k: v for k, v in {"verdict": verdict, "source": source, "q": q,
+                                                            "page": n}.items() if v})
+
+    f = db.filters()
+    no_source = urlencode({k: v for k, v in {"verdict": verdict, "q": q}.items() if v})
+    return _render(
+        request, "telegram.html", no_source_url="/telegram" + (f"?{no_source}" if no_source else ""),
+        posts=posts, total=total, page=page, pages=pages, page_url=page_url,
+        verdict=verdict, source=source, q=q, verdicts=queries.VERDICTS,
+        summary=queries.tg_summary(db.conn, site.tz), by_source=queries.tg_by_source(db.conn, site.tz),
+        mode=db.get("mode"), digest_time=db.get("digest_time"), include=f.include, exclude=f.exclude,
+        folder=tg_sources.folder(site.tg_folder, db), folder_from_site=db.get(tg_sources.FOLDER) is not None,
+        env_folder=site.tg_folder, env_sources=site.tg_sources, extra=tg_sources.extra(db),
+        seen=tg_sources.seen(db), tg_paused=db.get(tg_sources.PAUSED) == "1", hold=_hold(site),
+        digest_requested=db.get(tg_sources.DIGEST_REQUEST) == "1",
+    )
+
+
+async def settings_page(request: web.Request) -> web.Response:
+    site: Site = request.app[SITE]
+    db = site.db
+    start_of_day = datetime.now(ZoneInfo(site.tz)).replace(hour=0, minute=0, second=0, microsecond=0)
+    files = site.configured_accounts(file_only=True)
+    cards = []
+    for name, base in files.items():
+        account = hh_accounts.with_overrides(base, db)
+        cards.append({
+            "name": name, "base": base, "account": account, "changed": hh_accounts.overrides(db, name),
+            "paused": hh_accounts.paused(db, name), "limit": _today_limit(site, account),
+            "today": db.hh_applied_since(name, start_of_day.astimezone(timezone.utc)),
+        })
+    return _render(request, "settings.html", cards=cards, hold=_hold(site),
+                   strikes=int(db.get("hh_captcha_strikes", "0") or 0), file=str(site.accounts_path))
+
+
 # --- api for the inline edits ---
 
 def _row_json(row) -> dict:
@@ -467,6 +534,136 @@ async def api_interview_delete(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+def _words(value, *, lower: bool = True, lines: bool = False, limit: int = 100) -> list[str]:
+    """A textarea (comma or line separated; `lines` = one per line, for search queries) or a JSON list,
+    cleaned and capped."""
+    if isinstance(value, list):
+        items = [str(v) for v in value]
+    else:
+        items = re.split(r"\n" if lines else r"[,\n]", str(value or ""))
+    items = [(i.strip().lower() if lower else i.strip())[:80] for i in items]
+    items = [i for i in items if i]
+    return list(dict.fromkeys(items))[:limit]
+
+
+def _flag(value) -> bool:
+    return value in (True, 1, "1", "on", "true")
+
+
+async def api_telegram(request: web.Request) -> web.Response:
+    site: Site = request.app[SITE]
+    db = site.db
+    body = await _json_body(request)
+    if "mode" in body:
+        if body["mode"] not in ("realtime", "digest"):
+            raise web.HTTPBadRequest(text="режим: realtime или digest")
+        db.set("mode", body["mode"])
+    if "digest_time" in body:
+        value = str(body["digest_time"]).strip()
+        if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", value):
+            raise web.HTTPBadRequest(text="время дайджеста в виде 09:00")
+        db.set("digest_time", value)
+    for key in ("include", "exclude"):
+        if key in body:
+            db.set_keywords(key, _words(body[key]))
+    if "folder" in body:
+        db.set(tg_sources.FOLDER, str(body["folder"]).strip()[:64])
+    if "sources" in body:
+        raw = body["sources"] if isinstance(body["sources"], list) else re.split(r"[\s,]+", str(body["sources"]))
+        good, bad = [], []
+        for item in raw:
+            if not str(item).strip():
+                continue
+            value = tg_sources.normalize(str(item))
+            (good if value else bad).append(value or str(item).strip())
+        if bad:
+            raise web.HTTPBadRequest(text="не похоже на канал или чат: " + ", ".join(bad[:5])
+                                     + ". Нужен @username, ссылка t.me/username или числовой id.")
+        db.set(tg_sources.EXTRA, json.dumps(list(dict.fromkeys(good))[:200], ensure_ascii=False))
+    if "paused" in body:
+        db.set(tg_sources.PAUSED, "1" if _flag(body["paused"]) else "0")
+    db.event("settings", part="telegram")
+    return web.json_response({"ok": True})
+
+
+async def api_tg_verdict(request: web.Request) -> web.Response:
+    db: Database = request.app[SITE].db
+    body = await _json_body(request)
+    value = body.get("verdict")
+    if value not in (0, 1, None):
+        raise web.HTTPBadRequest(text="verdict: 1, 0 или null")
+    cur = db.conn.execute("UPDATE tg_posts SET verdict = ? WHERE id = ?", (value, int(request.match_info["id"])))
+    if cur.rowcount == 0:
+        raise web.HTTPNotFound()
+    return web.json_response({"verdict": value})
+
+
+async def api_tg_digest(request: web.Request) -> web.Response:
+    await _json_body(request)
+    request.app[SITE].db.set(tg_sources.DIGEST_REQUEST, "1")
+    return web.json_response({"ok": True})
+
+
+async def api_settings(request: web.Request) -> web.Response:
+    db: Database = request.app[SITE].db
+    body = await _json_body(request)
+    if "paused" in body:
+        db.set("paused", "1" if _flag(body["paused"]) else "0")
+    if "resume_lang" in body:
+        if body["resume_lang"] not in ("ru", "en"):
+            raise web.HTTPBadRequest(text="резюме: ru или en")
+        db.set("resume_lang", body["resume_lang"])
+    db.event("settings", part="general")
+    return web.json_response({"ok": True})
+
+
+async def api_account_settings(request: web.Request) -> web.Response:
+    site: Site = request.app[SITE]
+    name = request.match_info["name"]
+    base = site.configured_accounts(file_only=True).get(name)
+    if base is None:
+        raise web.HTTPNotFound(text="нет такого аккаунта в accounts.toml")
+    body = await _json_body(request)
+    if "paused" in body:
+        hh_accounts.set_paused(site.db, name, _flag(body["paused"]))
+    if body.get("reset"):
+        hh_accounts.set_overrides(site.db, base, {})
+    else:
+        values = {}
+        for field in hh_accounts.LIST_FIELDS:
+            if field in body:
+                values[field] = _words(body[field], lower=field in ("include", "exclude"),
+                                       lines=field == "queries")
+        if "queries" in values and not values["queries"]:
+            raise web.HTTPBadRequest(text="нужен хотя бы один поисковый запрос")
+        for field, (low, high) in hh_accounts.INT_FIELDS.items():
+            if field in body:
+                try:
+                    number = int(body[field])
+                except (TypeError, ValueError):
+                    raise web.HTTPBadRequest(text=f"{field}: нужно число")
+                if not low <= number <= high:
+                    raise web.HTTPBadRequest(text=f"{field}: от {low} до {high}")
+                values[field] = number
+        start = values.get("start_limit", base.start_limit)
+        if values.get("max_limit", base.max_limit) < start:
+            raise web.HTTPBadRequest(text="лимит в день не может быть меньше стартового")
+        if values:
+            current = hh_accounts.with_overrides(base, site.db)
+            merged = {f: getattr(current, f) for f in (*hh_accounts.LIST_FIELDS, *hh_accounts.INT_FIELDS)}
+            hh_accounts.set_overrides(site.db, base, {**merged, **values})
+    site.db.event("settings", name, part="account")
+    return web.json_response({"changed": hh_accounts.overrides(site.db, name),
+                              "paused": hh_accounts.paused(site.db, name)})
+
+
+async def api_captcha_clear(request: web.Request) -> web.Response:
+    await _json_body(request)
+    clear_captcha(request.app[SITE].db)
+    request.app[SITE].db.event("settings", part="captcha")
+    return web.json_response({"ok": True})
+
+
 async def api_last_event(request: web.Request) -> web.Response:
     return web.json_response({"id": queries.last_event_id(request.app[SITE].db.conn)})
 
@@ -489,6 +686,14 @@ def build_app(site: Site) -> web.Application:
         web.get("/calendar/new", interview_page),
         web.get(r"/calendar/{id:\d+}", interview_page),
         web.get("/stats", stats_page),
+        web.get("/telegram", telegram_page),
+        web.get("/settings", settings_page),
+        web.post("/api/telegram", api_telegram),
+        web.post(r"/api/telegram/posts/{id:\d+}/verdict", api_tg_verdict),
+        web.post("/api/telegram/digest", api_tg_digest),
+        web.post("/api/settings", api_settings),
+        web.post("/api/settings/account/{name}", api_account_settings),
+        web.post("/api/hh/captcha/clear", api_captcha_clear),
         web.post("/api/interviews", api_interview_save),
         web.post(r"/api/interviews/{id:\d+}", api_interview_save),
         web.post(r"/api/interviews/{id:\d+}/delete", api_interview_delete),
@@ -512,6 +717,8 @@ def main() -> None:
         tz=cfg.tz,
         accounts_path=cfg.accounts_path,
         session_hours=int(os.environ.get("WEB_SESSION_HOURS", "24")),
+        tg_folder=cfg.folder,
+        tg_sources=cfg.sources,
     )
     moved = interviews.import_once(site.db, site.tz)
     if moved:

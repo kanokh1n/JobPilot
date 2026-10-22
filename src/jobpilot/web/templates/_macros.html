@@ -3,8 +3,9 @@
 {%- endmacro %}
 
 {% macro hold_banner(hold) -%}
-{% if hold.paused %}<div class="banner warn">Отклики на паузе (команда /pause в боте). Снять: /unpause.</div>{% endif %}
-{% if hold.captcha_until %}<div class="banner bad">hh показал капчу: отклики стоят до {{ hold.captcha_until | local }}. Снять раньше: /hh_resume в боте.</div>{% endif %}
+{% if hold.paused %}<div class="banner warn">Всё на паузе: отклики hh и Телеграм. Снять: <a href="/settings">Настройки</a> или /unpause в боте.</div>{% endif %}
+{% if hold.captcha_until %}<div class="banner bad">hh показал капчу: отклики стоят до {{ hold.captcha_until | local }}. Снять раньше: <a href="/settings">Настройки</a> или /hh_resume в боте.</div>{% endif %}
+{% if hold.accounts_paused and not hold.paused %}<div class="banner warn">На паузе отклики аккаунтов: {{ hold.accounts_paused | join(', ') }} (<a href="/settings">Настройки</a>).</div>{% endif %}
 {%- endmacro %}
 
 {% macro funnel(s) -%}

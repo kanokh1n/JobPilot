@@ -17,7 +17,7 @@ from .search import WebSearch
 
 def _setup(name: str):
     cfg = Config.from_env(need_telegram=False)
-    accounts = load_accounts(cfg.accounts_path)
+    accounts = load_accounts(cfg.accounts_path, Database(cfg.db_path))  # with the site's changes
     if name not in accounts:
         raise SystemExit(f"Unknown account {name!r}; known: {', '.join(accounts)}")
     return cfg, accounts[name]

@@ -120,3 +120,21 @@ were. Applications at that stage still without a date are listed on top of the c
 "Графики": applications per day by account, employer answers per day (invitation or rejection) and the
 funnel of the applications sent in the last 7, 30 or 90 days, in total and per account. The overview
 also lists the next interviews.
+
+## Telegram and settings (v6)
+
+"Телеграм" lists the vacancies found in Telegram chats (filter by mark, source, text; 👍/👎 like the
+bot's buttons), counts per source, and what the userbot is listening to right now (it reports after each
+start and whenever the set changes). The same page changes the mode (realtime or daily digest), the
+digest time, the include/exclude words, a Telegram-only pause, the folder name and extra channels
+(@username, t.me link or id; on top of `TG_FOLDER`/`TG_SOURCES` from `.env`, which stay as the start),
+and asks the bot for the digest now.
+
+"Настройки": the global pause (same as /pause), RU/EN resume, lifting the captcha hold, and per hh
+account: a pause of applications and reminders (chats are still read), start and daily limit, applications
+per pass, search queries, include/exclude words and excluded companies. Only what differs from
+`accounts.toml` is stored (settings key `hh_account:<name>`); "Вернуть как в accounts.toml" drops it.
+
+Everything lives in the `settings` table, so no restart is needed: the bot checks the digest time and a
+digest request every 30 s, the userbot re-reads the sources every 5 minutes, and an hh pass loads the
+account's settings when it starts (the `hh-*` commands use them too). The bot commands keep working.

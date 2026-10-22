@@ -10,7 +10,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from ..config import Config
 from ..db import Database
 from ..tg.notifier import Notifier
-from .accounts import load_accounts
+from .accounts import load_accounts, paused, with_overrides
 from .apply import CaptchaError, HHBrowser
 from .chats import sync_chats
 from .followup import refresh_resumes, remind_pass
@@ -23,9 +23,13 @@ log = logging.getLogger(__name__)
 _browser_lock = asyncio.Lock()
 
 
-def _on_hold(db: Database, cfg: Config, job: str) -> bool:
-    """Skip every hh job while the paused flag or a captcha cooldown is on."""
-    if db.get("paused") == "1":
+def _on_hold(db: Database, cfg: Config, job: str, account: str | None = None) -> bool:
+    """Skip every hh job while the paused flag or a captcha cooldown is on.
+
+    With `account`, the job also stops while that account is paused on the site (applications and
+    reminders; chats and resume raises keep running).
+    """
+    if db.get("paused") == "1" or (account and paused(db, account)):
         return True
     until = captcha_hold(db, datetime.now(ZoneInfo(cfg.tz)))
     if until:
@@ -43,9 +47,10 @@ def schedule_hh(scheduler: AsyncIOScheduler, cfg: Config, db: Database, notifier
         profile = cfg.data_dir / "browser" / account.name
         shots = cfg.data_dir / "screenshots"
 
-        async def apply_job(account=account, profile=profile, shots=shots) -> None:
-            if _on_hold(db, cfg, f"apply/{account.name}"):
+        async def apply_job(base=account, profile=profile, shots=shots) -> None:
+            if _on_hold(db, cfg, f"apply/{base.name}", base.name):
                 return
+            account = with_overrides(base, db)  # limits and words changed on the site apply from the next pass
             async with _browser_lock:
                 try:
                     async with HHBrowser(profile, shots) as browser:
@@ -70,7 +75,7 @@ def schedule_hh(scheduler: AsyncIOScheduler, cfg: Config, db: Database, notifier
                 await notifier.say(f"hh/{account.name}: откликов {summary.applied}, ошибок {summary.failed}")
 
         async def remind_job(account=account, profile=profile, shots=shots) -> None:
-            if _on_hold(db, cfg, f"remind/{account.name}"):
+            if _on_hold(db, cfg, f"remind/{account.name}", account.name):
                 return
             async with _browser_lock:
                 try:

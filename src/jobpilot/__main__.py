@@ -11,6 +11,7 @@ from .db import Database
 from .hh.scheduler import schedule_hh
 from .tg.bot import build_dispatcher, create_bot
 from .tg.notifier import Notifier
+from .tg.sources import DIGEST_REQUEST
 from .tg.userbot import make_client, source_titles, start_listening
 
 
@@ -31,18 +32,31 @@ async def run() -> None:
 
     scheduler = AsyncIOScheduler(timezone=cfg.tz)
 
+    scheduled = {"digest_time": ""}
+
     def schedule_digest(hhmm: str) -> None:
         hour, minute = hhmm.split(":")
         scheduler.add_job(
             notifier.send_digest, "cron", hour=int(hour), minute=int(minute),
             id="digest", replace_existing=True,
         )
+        scheduled["digest_time"] = hhmm
+
+    async def follow_site() -> None:
+        """The site runs in its own process and only writes settings; pick its changes up here."""
+        if db.get("digest_time") != scheduled["digest_time"]:
+            schedule_digest(db.get("digest_time"))
+        if db.get(DIGEST_REQUEST) == "1":
+            db.set(DIGEST_REQUEST, "0")
+            if await notifier.send_digest() == 0:
+                await notifier.say("Дайджест с сайта: новых вакансий нет.")
 
     schedule_digest(db.get("digest_time"))
+    scheduler.add_job(follow_site, "interval", seconds=30, id="follow-site", replace_existing=True)
     scheduler.start()
 
     client = make_client(cfg)
-    dp = build_dispatcher(db, notifier, cfg.owner_id, schedule_digest, lambda: source_titles(client, cfg))
+    dp = build_dispatcher(db, notifier, cfg.owner_id, schedule_digest, lambda: source_titles(client, cfg, db))
     await client.connect()
     if not await client.is_user_authorized():
         raise SystemExit("Userbot is not signed in. Run: jobpilot login")

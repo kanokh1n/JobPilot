@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% from "_macros.html" import hold_banner %}
+{% block title %}Настройки · JobPilot{% endblock %}
+{% block body %}
+{{ hold_banner(hold) }}
+<h1>Настройки</h1>
+<p class="muted small">Бот и hh-воркер читают эти настройки сами: лимиты и слова действуют со следующего прохода, режим и паузы сразу. Перезапуск не нужен.</p>
+
+<div class="grid2">
+  <form class="panel form" data-api="/api/settings">
+    <h3>Общее</h3>
+    <label class="check"><input type="checkbox" name="paused" {% if hold.paused %}checked{% endif %}> Пауза всего: отклики hh, напоминания и Телеграм <span class="muted small">(как /pause в боте)</span></label>
+    <label>Резюме для откликов
+      <select name="resume_lang">
+        <option value="ru" {% if hold.resume_lang == 'ru' %}selected{% endif %}>RU</option>
+        <option value="en" {% if hold.resume_lang == 'en' %}selected{% endif %}>EN</option>
+      </select></label>
+    <p class="muted small">Письмо и напоминание берутся на том же языке, что и резюме.</p>
+    <p class="error" hidden></p>
+    <div class="actions"><button>Сохранить</button></div>
+  </form>
+
+  <section class="panel">
+    <h3>Капча hh</h3>
+    {% if hold.captcha_until %}
+    <p>Оба аккаунта стоят до <b>{{ hold.captcha_until | local }}</b> (капча {{ strikes }} раз подряд).</p>
+    <p class="muted small">Если снять паузу раньше, а hh снова покажет капчу, пауза включится снова и станет длиннее.</p>
+    <p class="error" hidden></p>
+    <div class="actions"><button type="button" class="danger" data-post="/api/hh/captcha/clear" data-confirm="Снять паузу hh после капчи?">Снять паузу hh</button></div>
+    {% else %}
+    <p class="muted">Капчи сейчас нет, hh работает по расписанию.</p>
+    {% endif %}
+  </section>
+</div>
+
+<h2>Аккаунты hh</h2>
+{% if not cards %}<p class="muted">Нет {{ file }}: hh-часть выключена.</p>{% endif %}
+<div class="grid2">
+  {% for c in cards %}
+  {% set a = c.account %}
+  <form class="panel form" data-api="/api/settings/account/{{ c.name }}">
+    <h3><a href="/account/{{ c.name }}">{{ c.name }}</a>
+      <span class="muted small">· сегодня {{ c.today }}{% if c.limit %} из {{ c.limit }}{% endif %}</span>
+      {% if c.changed %}<span class="pill s-invitation">изменено на сайте</span>{% endif %}</h3>
+    <label class="check"><input type="checkbox" name="paused" {% if c.paused %}checked{% endif %}> Пауза откликов и напоминаний этого аккаунта <span class="muted small">(чаты читаются дальше)</span></label>
+    <div class="row">
+      <label>Старт, в день <input type="number" name="start_limit" min="1" max="200" value="{{ a.start_limit }}" required></label>
+      <label>Лимит в день <input type="number" name="max_limit" min="1" max="200" value="{{ a.max_limit }}" required></label>
+      <label>За один проход <input type="number" name="per_pass" min="1" max="50" value="{{ a.per_pass }}" required></label>
+    </div>
+    <p class="muted small">Лимит растёт от стартового на {{ a.ramp_step }} в день до «лимита в день». Проходы идут раз в час с 9 до 21.</p>
+    <label>Поисковые запросы <span class="muted small">(по одному в строке)</span>
+      <textarea name="queries" rows="4" required>{{ a.queries | join('\n') }}</textarea></label>
+    <label>Нужно хотя бы одно слово в названии или описании
+      <textarea name="include" rows="2">{{ a.include | join(', ') }}</textarea></label>
+    <label>Не откликаться, если есть слово
+      <textarea name="exclude" rows="2">{{ a.exclude | join(', ') }}</textarea></label>
+    <label>Исключённые компании <span class="muted small">(через запятую или по строкам; совпадение целым словом)</span>
+      <textarea name="exclude_employers" rows="2">{{ a.exclude_employers | join(', ') }}</textarea></label>
+    <p class="muted small">Резюме: RU «{{ a.resumes.get('ru', '—') }}», EN «{{ a.resumes.get('en', '—') }}». Названия резюме и параметры поиска меняются в accounts.toml.</p>
+    <p class="error" hidden></p>
+    <div class="actions">
+      <button>Сохранить</button>
+      {% if c.changed %}<button type="button" class="ghost" data-post="/api/settings/account/{{ c.name }}" data-body='{"reset": true}' data-confirm="Вернуть значения из accounts.toml?">Вернуть как в accounts.toml</button>{% endif %}
+    </div>
+  </form>
+  {% endfor %}
+</div>
+{% endblock %}

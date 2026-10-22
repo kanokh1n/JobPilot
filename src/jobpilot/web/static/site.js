@@ -109,3 +109,55 @@ document.querySelectorAll(".chat-open .thread, .panel .thread").forEach((t) => {
     catch (err) { error.textContent = err.message; error.hidden = false; }
   });
 })();
+
+// v6: settings forms (Telegram, settings page), one-click actions and post verdicts, all as JSON.
+(function () {
+  async function send(url, body) {
+    const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (r.status === 401) { location.href = "/login?next=" + encodeURIComponent(location.pathname + location.search); throw new Error("login"); }
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  }
+  function showError(scope, err) {
+    const box = scope && scope.querySelector(".error");
+    if (box) { box.textContent = err.message || "Не сохранилось"; box.hidden = false; } else alert(err.message);
+  }
+
+  document.querySelectorAll("form[data-api]").forEach((form) => {
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const body = {};
+      for (const el of form.elements) {
+        if (!el.name) continue;
+        body[el.name] = el.type === "checkbox" ? el.checked : el.value;
+      }
+      const button = form.querySelector("button:not([type=button])");
+      try {
+        await send(form.dataset.api, body);
+        if (button) button.textContent = "Сохранено ✓";
+        setTimeout(() => location.reload(), 400);
+      } catch (err) { showError(form, err); }
+    });
+  });
+
+  document.querySelectorAll("[data-post]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (btn.dataset.confirm && !confirm(btn.dataset.confirm)) return;
+      try {
+        await send(btn.dataset.post, btn.dataset.body ? JSON.parse(btn.dataset.body) : {});
+        if (btn.dataset.done) { btn.textContent = btn.dataset.done; btn.disabled = true; } else location.reload();
+      } catch (err) { showError(btn.closest(".panel"), err); }
+    });
+  });
+
+  document.querySelectorAll(".post [data-verdict]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const post = btn.closest(".post");
+      const value = btn.classList.contains("on") ? null : Number(btn.dataset.verdict);  // a second click clears it
+      try {
+        await send(`/api/telegram/posts/${post.dataset.id}/verdict`, { verdict: value });
+        post.querySelectorAll("[data-verdict]").forEach((b) => b.classList.toggle("on", value !== null && Number(b.dataset.verdict) === value));
+      } catch (err) { btn.classList.add("failed"); }
+    });
+  });
+})();

@@ -283,3 +283,50 @@ def funnel(conn: sqlite3.Connection, tz: str, days: int, account: str = "") -> d
     for r in apps:
         by_account.setdefault(r["account"], []).append(r)
     return {"total": count(apps), "accounts": {a: count(rows) for a, rows in sorted(by_account.items())}}
+
+
+# --- Telegram (v6) ---
+
+VERDICTS = {"": "все", "new": "без оценки", "1": "интересно", "0": "мимо"}
+TG_PAGE = 50
+
+
+def tg_posts(conn: sqlite3.Connection, verdict: str = "", source: str = "", q: str = "",
+             page: int = 1) -> tuple[list[sqlite3.Row], int]:
+    where, args = [], []
+    if verdict == "new":
+        where.append("verdict IS NULL")
+    elif verdict in ("0", "1"):
+        where.append("verdict = ?")
+        args.append(int(verdict))
+    if source:
+        where.append("source = ?")
+        args.append(source)
+    if q:
+        where.append("text LIKE ?")
+        args.append(f"%{q}%")
+    sql_where = f"WHERE {' AND '.join(where)}" if where else ""
+    total = conn.execute(f"SELECT COUNT(*) FROM tg_posts {sql_where}", args).fetchone()[0]
+    rows = conn.execute(
+        f"SELECT * FROM tg_posts {sql_where} ORDER BY id DESC LIMIT ? OFFSET ?",
+        [*args, TG_PAGE, (max(page, 1) - 1) * TG_PAGE],
+    ).fetchall()
+    return rows, total
+
+
+def tg_by_source(conn: sqlite3.Connection, tz: str) -> list[sqlite3.Row]:
+    """Per source: posts found in all and in the last 7 days, and the last one's time."""
+    return conn.execute(
+        "SELECT source, COUNT(*) AS n, SUM(created_at >= ?) AS week, MAX(created_at) AS last"
+        " FROM tg_posts GROUP BY source ORDER BY last DESC",
+        (_day_start(tz, 6),),
+    ).fetchall()
+
+
+def tg_summary(conn: sqlite3.Connection, tz: str) -> dict:
+    row = conn.execute(
+        "SELECT COUNT(*) AS total, COALESCE(SUM(sent = 0), 0) AS pending, COALESCE(SUM(created_at >= ?), 0) AS today,"
+        " COALESCE(SUM(created_at >= ?), 0) AS week, COALESCE(SUM(verdict = 1), 0) AS liked FROM tg_posts",
+        (_day_start(tz), _day_start(tz, 6)),
+    ).fetchone()
+    return dict(row)

@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% from "_macros.html" import hold_banner %}
+{% block title %}Телеграм · JobPilot{% endblock %}
+{% block body %}
+{{ hold_banner(hold) }}
+{% if tg_paused and not hold.paused %}<div class="banner warn">Телеграм-мониторинг на паузе: новые посты не сохраняются и не приходят.</div>{% endif %}
+<h1>Телеграм</h1>
+<section class="cards">
+  <div class="card"><span class="n">{{ summary.today }}</span><span class="l">вакансий сегодня</span></div>
+  <div class="card"><span class="n">{{ summary.week }}</span><span class="l">за 7 дней</span></div>
+  <div class="card"><span class="n">{{ summary.pending }}</span><span class="l">ждут дайджеста</span></div>
+  <div class="card"><span class="n">{{ summary.liked }}</span><span class="l">отмечено «интересно»</span></div>
+</section>
+
+<div class="grid2">
+  <form class="panel form" data-api="/api/telegram">
+    <h3>Мониторинг</h3>
+    <label class="check"><input type="checkbox" name="paused" {% if tg_paused %}checked{% endif %}> Пауза Телеграма <span class="muted small">(hh продолжает работать)</span></label>
+    <div class="row">
+      <label>Режим
+        <select name="mode">
+          <option value="realtime" {% if mode == 'realtime' %}selected{% endif %}>сразу, по одной</option>
+          <option value="digest" {% if mode == 'digest' %}selected{% endif %}>дайджест раз в день</option>
+        </select></label>
+      <label>Время дайджеста <input type="time" name="digest_time" value="{{ digest_time }}" required></label>
+    </div>
+    <label>Нужно хотя бы одно слово <span class="muted small">(через запятую; пусто = любые вакансии)</span>
+      <textarea name="include" rows="2">{{ include | join(', ') }}</textarea></label>
+    <label>Отбросить, если есть слово
+      <textarea name="exclude" rows="2">{{ exclude | join(', ') }}</textarea></label>
+    <p class="muted small">Слова ищутся целиком, без учёта регистра, «ё» = «е». Это фильтр только для Телеграма, у откликов hh свои слова в <a href="/settings">Настройках</a>.</p>
+    <p class="error" hidden></p>
+    <div class="actions">
+      <button>Сохранить</button>
+      <button type="button" class="ghost" data-post="/api/telegram/digest" data-done="Бот пришлёт дайджест в течение минуты" {% if digest_requested %}disabled{% endif %}>
+        {{ 'Дайджест уже запрошен' if digest_requested else 'Прислать дайджест сейчас' }}</button>
+    </div>
+  </form>
+
+  <form class="panel form" data-api="/api/telegram">
+    <h3>Источники</h3>
+    <label>Папка Телеграма на аккаунте юзербота
+      <input name="folder" value="{{ folder or '' }}" maxlength="64" placeholder="без папки"></label>
+    {% if env_folder and (folder or '') != env_folder %}<p class="muted small">В .env указана папка «{{ env_folder }}», сейчас действует значение с сайта.</p>{% endif %}
+    <label>Ещё каналы и чаты <span class="muted small">(@username, ссылка t.me/… или id, по одному в строке)</span>
+      <textarea name="sources" rows="4" placeholder="@remote_jobs">{{ extra | join('\n') }}</textarea></label>
+    {% if env_sources %}<p class="muted small">Из .env (TG_SOURCES): {{ env_sources | join(', ') }}</p>{% endif %}
+    <p class="muted small">Юзербот должен состоять в чате. Закрытый чат проще добавить в папку. Изменения подхватываются в течение 5 минут.</p>
+    <p class="error" hidden></p>
+    <div class="actions"><button>Сохранить</button></div>
+  </form>
+</div>
+
+<div class="grid2">
+  <section class="panel">
+    <h3>Что слушает юзербот {% if seen.at %}<span class="muted small">· обновлено {{ seen.at | local }}</span>{% endif %}</h3>
+    {% if seen.unresolved %}<p class="error small">Не найдены: {{ seen.unresolved | join(', ') }}</p>{% endif %}
+    {% if seen.names %}
+    <ul class="tags">{% for n in seen.names %}<li>{{ n }}</li>{% endfor %}</ul>
+    {% elif seen.at %}<p class="muted">Ни одного источника.</p>
+    {% else %}<p class="muted">Бот ещё не отчитался: список появится после перезапуска сервиса с этой версией.</p>{% endif %}
+  </section>
+  <section class="panel">
+    <h3>Откуда приходят вакансии</h3>
+    <div class="scroll flat">
+    <table class="apps small-table">
+      <tr><th>Источник</th><th>Всего</th><th>За 7 дней</th><th>Последняя</th></tr>
+      {% for s in by_source %}
+      <tr><td><a href="/telegram?source={{ s.source | urlencode }}">{{ s.source }}</a></td><td>{{ s.n }}</td><td>{{ s.week or 0 }}</td><td class="nowrap muted">{{ s.last | local }}</td></tr>
+      {% else %}
+      <tr><td colspan="4" class="muted">Пока ничего не найдено.</td></tr>
+      {% endfor %}
+    </table>
+    </div>
+  </section>
+</div>
+
+<h2 id="posts">Найденные вакансии <span class="muted small">· {{ total }}</span></h2>
+<form class="filters" method="get" action="/telegram#posts">
+  <select name="verdict" onchange="this.form.submit()">
+    {% for k, v in verdicts.items() %}<option value="{{ k }}" {% if verdict == k %}selected{% endif %}>{{ v }}</option>{% endfor %}
+  </select>
+  {% if source %}<input type="hidden" name="source" value="{{ source }}"><a class="chip" href="{{ no_source_url }}#posts" title="показать все источники">{{ source }} ✕</a>{% endif %}
+  <input type="search" name="q" value="{{ q }}" placeholder="поиск по тексту">
+  <button>Найти</button>
+</form>
+<div class="posts">
+  {% for p in posts %}
+  <article class="post panel" data-id="{{ p.id }}">
+    <div class="post-head">
+      <b>{{ p.source }}</b> <span class="muted small">· {{ p.created_at | local }}{% if not p.sent %} · ждёт дайджеста{% endif %}</span>
+      <a class="ext small" href="{{ p.url }}" target="_blank" rel="noopener">открыть в Телеграме ↗</a>
+    </div>
+    {% set text = p.text.strip() %}
+    {% if text | length > 400 %}
+    <details><summary class="text">{{ text[:400] }}…</summary><div class="text">{{ text[400:] }}</div></details>
+    {% else %}<div class="text">{{ text }}</div>{% endif %}
+    <div class="verdict">
+      <button type="button" class="ghost {{ 'on' if p.verdict == 1 }}" data-verdict="1">👍 интересно</button>
+      <button type="button" class="ghost {{ 'on' if p.verdict == 0 }}" data-verdict="0">👎 мимо</button>
+    </div>
+  </article>
+  {% else %}
+  <p class="muted">Ничего не нашлось.</p>
+  {% endfor %}
+</div>
+{% if pages > 1 %}
+<div class="pager">
+  {% for n in range(1, pages + 1) %}{% if n == page %}<b>{{ n }}</b>{% elif n <= 3 or n > pages - 2 or (n - page) | abs <= 2 %}<a href="{{ page_url(n) }}#posts">{{ n }}</a>{% elif n == 4 or n == pages - 2 %}…{% endif %}{% endfor %}
+</div>
+{% endif %}
+{% endblock %}
