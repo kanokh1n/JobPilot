@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% from "_macros.html" import hold_banner, pill, stage_select %}
+{% block title %}{{ tab.label if tab.key else 'Вакансии' }} · JobPilot{% endblock %}
+{% block body %}
+{{ hold_banner(hold) }}
+{% set sm = summary %}
+{% if tab.kind == 'tg' and sm.paused and not hold.paused %}<div class="banner warn">Телеграм-мониторинг на паузе: новые посты не сохраняются. <a href="/settings/telegram">Настройки</a></div>{% endif %}
+{% if tab.kind == 'feed' and sm.paused and not hold.paused %}<div class="banner warn">Ленты на паузе: сайты вакансий не читаются. <a href="/settings/feeds">Настройки</a></div>{% endif %}
+
+<h1 class="page-h">
+  {%- if tab.kind == 'hh' %}Вакансии <em>{{ tab.key }}</em>
+  {%- elif tab.kind == 'tg' %}Из <em>Телеграма</em>
+  {%- elif tab.kind == 'feed' %}<em>{{ tab.label }}</em>
+  {%- else %}Вакансии{% endif %}</h1>
+
+<nav class="tabs" aria-label="Источник">
+  {% for t in tabs %}<a href="{{ '/jobs?src=' ~ t.key if t.key else '/jobs' }}" {% if t.key == tab.key %}class="on" aria-current="page"{% endif %}>{{ t.label }}<sup>{{ t.n }}</sup></a>{% endfor %}
+</nav>
+
+{% if tab.kind == 'hh' %}
+<div class="nums">
+  <div><b>{{ sm.s.today }}{% if sm.limit %}<small> / {{ sm.limit }}</small>{% endif %}</b><span class="cap">сегодня{% if sm.limit %} из лимита{% endif %}</span></div>
+  <div><b>{{ sm.s.week }}</b><span class="cap">за 7 дней</span></div>
+  <div><b>{{ sm.s.total }}</b><span class="cap">всего отправлено</span></div>
+  <div><b>{{ sm.s.answer_rate }}%</b><span class="cap">ответили ({{ sm.s.answered }})</span></div>
+  <p class="muted small">резюме {{ hold.resume_lang | upper }}{% if sm.per_pass %} · до {{ sm.per_pass }} за проход{% endif %}{% if sm.paused %} · <b>отклики на паузе</b>{% endif %}
+    {% if sm.configured %}<br><a href="/settings/hh/{{ tab.key }}">лимиты и слова →</a>{% endif %}</p>
+</div>
+{% elif tab.kind == 'tg' %}
+<div class="nums">
+  <div><b>{{ sm.s.today }}</b><span class="cap">сегодня</span></div>
+  <div><b>{{ sm.s.week }}</b><span class="cap">за 7 дней</span></div>
+  <div><b>{{ sm.s.pending }}</b><span class="cap">{{ 'ждут дайджеста в ' ~ sm.digest_time if sm.mode == 'digest' else 'ещё не отправлены' }}</span></div>
+  <div><b>{{ applied_here }}</b><span class="cap">откликов вручную</span></div>
+  <div><b>{{ sm.seen.names | length }}</b><span class="cap">чатов слушает</span></div>
+  <p class="muted small"><a href="/settings/telegram">слова и источники →</a></p>
+</div>
+{% elif tab.kind == 'feed' %}
+<div class="nums">
+  <div><b>{{ sm.s.today }}</b><span class="cap">подходящих сегодня</span></div>
+  <div><b>{{ sm.s.week }}</b><span class="cap">за 7 дней</span></div>
+  <div><b>{{ sm.s.total }}</b><span class="cap">всего из лент</span></div>
+  <div><b>{{ applied_here }}</b><span class="cap">откликов вручную</span></div>
+  <p class="muted small">
+    {% for fd in sm.feeds %}{{ fd.source.name }} {% if not fd.source.enabled %}<span class="muted">выкл.</span>{% elif fd.state.error %}<span class="error">ошибка</span>{% elif fd.state.ok_at %}✓{% else %}<span class="muted">ещё не читалась</span>{% endif %}{{ ' · ' if not loop.last }}{% endfor %}
+    <br><a href="/settings/feeds">ленты и слова →</a></p>
+</div>
+{% endif %}
+
+<div class="chips" aria-label="Статус">
+  {% for c in chips %}<a href="{{ url(st=c.key, page=None) }}" {% if c.key == f.bucket and not (f.stage and not c.key) %}class="on"{% endif %}>{{ c.label }}<span class="n">{{ c.n }}</span></a>{% endfor %}
+</div>
+
+<form class="filters" method="get" action="/jobs">
+  {% if tab.key %}<input type="hidden" name="src" value="{{ tab.key }}">{% endif %}
+  {% if f.bucket %}<input type="hidden" name="st" value="{{ f.bucket }}">{% endif %}
+  <input type="search" name="q" value="{{ f.q }}" placeholder="{{ 'вакансия, компания, заметка' if tab.kind in ('all', 'hh') else 'поиск по тексту' }}">
+  {% if tab.kind == 'hh' %}
+  <select name="stage" onchange="this.form.submit()">
+    <option value="">все этапы</option>
+    {% for st in STAGE_ORDER %}<option value="{{ st }}" {% if f.stage == st %}selected{% endif %}>{{ LABELS[st] }}</option>{% endfor %}
+    {% for st in custom_stages %}<option value="{{ st }}" {% if f.stage == st %}selected{% endif %}>{{ st }}</option>{% endfor %}
+  </select>
+  {% elif origins %}
+  <select name="from" onchange="this.form.submit()">
+    <option value="">{{ 'все каналы' if tab.kind == 'tg' else 'все сайты' }}</option>
+    {% for o in origins %}<option value="{{ o }}" {% if f.origin == o %}selected{% endif %}>{{ feed_names.get(o, o) }}</option>{% endfor %}
+  </select>
+  {% endif %}
+  <button class="go">Найти</button>
+  <span class="muted small">{{ total }} шт.</span>
+</form>
+
+<div class="scroll">
+<table class="jobs">
+  <thead><tr><th class="cap">Когда</th>{% if tab.kind == 'all' %}<th class="cap">Откуда</th>{% endif %}<th class="cap">Вакансия</th><th class="cap">Статус</th><th class="cap">Заметка</th><th></th></tr></thead>
+  <tbody>
+  {% for r in rows %}
+  {% if r.kind == 'app' %}
+  <tr data-id="{{ r.id }}">
+    <td class="when">{{ r.at | local }}</td>
+    {% if tab.kind == 'all' %}<td class="from">{% if r.source == 'hh' %}<span class="src hh">hh {{ r.src }}</span>{% else %}<span class="src {{ r.source }}">{{ 'Телеграм' if r.source == 'tg' else country_name(r.src | upper) }}</span>{% endif %}</td>{% endif %}
+    <td class="what"><a class="title" href="/application/{{ r.id }}">{{ r.title }}</a><span class="sub">{{ r.sub }}{% if r.stage is none %} · {{ r.status }}{% endif %}{% if r.source != 'hh' %} · откликнулись вручную{% endif %}</span></td>
+    <td class="state">{% if r.stage is not none %}{{ stage_select(r, custom_stages) }}{% else %}{{ pill(none) }}{% endif %}</td>
+    <td class="memo"><input class="note" value="{{ r.note }}" placeholder="—" maxlength="2000"></td>
+    <td class="acts"><a href="{{ r.url }}" target="_blank" rel="noopener" title="открыть вакансию">{{ 'hh ↗' if r.source == 'hh' else '↗' }}</a></td>
+  </tr>
+  {% else %}
+  <tr data-verdict-url="/api/{{ 'telegram/posts' if r.kind == 'tg' else 'feeds/jobs' }}/{{ r.id }}/verdict">
+    <td class="when">{{ r.at | local }}</td>
+    {% if tab.kind == 'all' %}<td class="from"><span class="src {{ r.kind }}">{{ 'Телеграм' if r.kind == 'tg' else country_name(r.src | upper) }}</span></td>{% endif %}
+    <td class="what">
+      {% if r.body %}<details><summary class="title">{{ r.title }}</summary><div class="body">{{ r.body | truncate(1500) }}</div></details>
+      {% else %}<span class="title">{{ r.title }}</span>{% endif %}
+      <span class="sub">{% if r.kind == 'tg' %}{{ r.sub }}{% else %}{{ r.sub }}{{ ' · ' if r.sub and r.place }}{{ r.place }}{{ ' · ' if r.sub or r.place }}{{ feed_names.get(r.origin, r.origin) }}{% endif %}</span>
+    </td>
+    <td class="state"><span class="st b-{{ r.bucket }}">{{ {'new': 'новая', 'liked': 'интересная'}.get(r.bucket, 'не подошла' if r.status == 'other' else 'мимо') }}</span>
+      {% if r.status == 'pending' %}<span class="sub">ждёт дайджеста</span>{% endif %}</td>
+    <td class="memo muted none">—</td>
+    <td class="acts">
+      <button type="button" class="ghost" data-post="/api/jobs/{{ r.kind }}/{{ r.id }}/applied" title="вы откликнулись сами: дальше этапы, заметка, собеседования">Откликнулся</button>
+      <button type="button" class="ghost{{ ' on' if r.verdict == 1 }}" data-verdict="1" title="интересно">👍</button>
+      <button type="button" class="ghost{{ ' on' if r.verdict == 0 }}" data-verdict="0" title="мимо">👎</button>
+      <a href="{{ r.url }}" target="_blank" rel="noopener" title="{{ 'открыть в Телеграме' if r.kind == 'tg' else 'открыть на сайте' }}">↗</a>
+    </td>
+  </tr>
+  {% endif %}
+  {% else %}
+  <tr><td colspan="6" class="muted empty">{% if f.q or f.bucket or f.stage or f.origin %}Под фильтр ничего не попало.{% else %}Пока пусто.{% endif %}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% if pages > 1 %}
+<nav class="pager">
+  {% for n in range(1, pages + 1) %}{% if n == f.page %}<b>{{ n }}</b>{% elif n <= 3 or n > pages - 2 or (n - f.page) | abs <= 2 %}<a href="{{ url(page=n) }}">{{ n }}</a>{% elif n == 4 or n == pages - 2 %}…{% endif %}{% endfor %}
+</nav>
+{% endif %}
+{% endblock %}

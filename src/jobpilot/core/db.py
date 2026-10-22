@@ -209,6 +209,8 @@ class Database:
         row = self.application(app_id)
         if row is None:
             raise LookupError(f"no application {app_id}")
+        if row["source"] != "hh":
+            return  # only hh has a system to hand the stage back to
         stage = (stages.stage_for_hh_state(row["hh_state"]) if row["hh_state"] else None) \
             or stages.stage_for_status(row["status"])
         self._conn.execute(
@@ -225,6 +227,44 @@ class Database:
         if cur.rowcount == 0:
             raise LookupError(f"no application {app_id}")
         self.event("note", ref_id=app_id)
+
+    # --- applications sent by hand to a Telegram post or a job-site feed item (v10) ---
+
+    MANUAL_SOURCES = ("tg", "feed")
+
+    def add_manual_application(self, source: str, account: str, vacancy_id: str, name: str, employer: str,
+                               url: str) -> int:
+        """"Откликнулся" on the site: an application with stages like an hh one, but only moved by hand.
+
+        account is the tab it shows under: "tg" for Telegram, the feed's country in lower case ("rs").
+        The same post or item twice gives the same application.
+        """
+        if source not in self.MANUAL_SOURCES:
+            raise ValueError(source)
+        now = _now()
+        cur = self._conn.execute(
+            "INSERT OR IGNORE INTO applications (source, account, vacancy_id, name, employer, url, status, stage,"
+            " stage_manual, applied_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'manual', ?, 1, ?, ?)",
+            (source, account, vacancy_id, name[:300], employer[:200], url, stages.SENT, now, now),
+        )
+        app_id = self._conn.execute(
+            "SELECT id FROM applications WHERE source = ? AND account = ? AND vacancy_id = ?",
+            (source, account, vacancy_id),
+        ).fetchone()[0]
+        if cur.rowcount:
+            self._log_stage(app_id, account, stages.SENT, "user", "откликнулся вручную")
+            self.event("application", account, app_id, status="manual")
+        return app_id
+
+    def delete_manual_application(self, app_id: int) -> None:
+        """Undo "Откликнулся": the post or feed item is back in the list as it was. hh ones are never deleted."""
+        row = self.application(app_id)
+        if row is None or row["source"] not in self.MANUAL_SOURCES:
+            raise LookupError(f"no manual application {app_id}")
+        self._conn.execute("DELETE FROM stage_history WHERE application_id = ?", (app_id,))
+        self._conn.execute("UPDATE interviews SET application_id = NULL WHERE application_id = ?", (app_id,))
+        self._conn.execute("DELETE FROM applications WHERE id = ?", (app_id,))
+        self.event("application", row["account"], app_id, deleted=True)
 
     # --- interviews (the calendar) ---
 

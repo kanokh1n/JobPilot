@@ -133,7 +133,7 @@ def test_stats_page(tmp_path):
             assert r.status == 200 and "Отклики по дням" in text and "<svg" in text
         db.add_interview(datetime.now(timezone.utc) + timedelta(days=1), application_id=2, link="https://x.test/m")
         overview = await (await client.get("/")).text()
-        assert "Ближайшие собеседования" in overview and "PHP dev" in overview
+        assert "Требует внимания" in overview and "собеседование, Beta" in overview
         app = await (await client.get("/application/2")).text()
         assert "https://x.test/m" in app
 

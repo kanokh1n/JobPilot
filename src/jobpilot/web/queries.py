@@ -14,20 +14,9 @@ STAGE_ORDER = (stages.SENT, stages.VIEWED, stages.INVITATION, stages.INTERVIEW, 
 # Stages that mean the employer reacted to the application.
 ANSWERED = (stages.INVITATION, stages.INTERVIEW, stages.OFFER, stages.REJECTED)
 
-NOT_APPLIED = "none"  # filter value for vacancies we skipped or failed to apply to
-PAGE = 100
-
-
-@dataclass
-class Filter:
-    account: str = ""
-    stage: str = ""        # "" = every application we sent, NOT_APPLIED, or a stage
-    q: str = ""
-    page: int = 1
-
-
 def accounts(conn: sqlite3.Connection, configured: list[str]) -> list[str]:
-    seen = [r[0] for r in conn.execute("SELECT DISTINCT account FROM applications ORDER BY account")]
+    """hh accounts: the configured ones and any that has applications (applications by hand are not one)."""
+    seen = [r[0] for r in conn.execute("SELECT DISTINCT account FROM applications WHERE source = 'hh' ORDER BY account")]
     return list(dict.fromkeys(configured + seen))
 
 
@@ -81,31 +70,6 @@ def daily(conn: sqlite3.Connection, tz: str, days: int = 14, account: str | None
         if day in counts:
             counts[day] += 1
     return [{"day": d, "n": counts[d]} for d in sorted(counts)]
-
-
-def applications(conn: sqlite3.Connection, f: Filter) -> tuple[list[sqlite3.Row], int]:
-    """One page of the stage table and how many rows match in total."""
-    clauses, args = [], []
-    if f.account:
-        clauses.append("account = ?")
-        args.append(f.account)
-    if f.stage == NOT_APPLIED:
-        clauses.append("stage IS NULL")
-    elif f.stage:
-        clauses.append("stage = ?")
-        args.append(f.stage)
-    else:
-        clauses.append("stage IS NOT NULL")
-    if f.q:
-        clauses.append("(name LIKE ? OR employer LIKE ? OR note LIKE ?)")
-        args += [f"%{f.q}%"] * 3
-    where = " AND ".join(clauses)
-    total = conn.execute(f"SELECT COUNT(*) FROM applications WHERE {where}", args).fetchone()[0]
-    rows = conn.execute(
-        f"SELECT * FROM applications WHERE {where} ORDER BY applied_at DESC, id DESC LIMIT ? OFFSET ?",
-        [*args, PAGE, (max(f.page, 1) - 1) * PAGE],
-    ).fetchall()
-    return rows, total
 
 
 def recent_changes(conn: sqlite3.Connection, limit: int = 12, account: str | None = None) -> list[sqlite3.Row]:
@@ -331,33 +295,6 @@ def funnel(conn: sqlite3.Connection, tz: str, days: int, account: str = "") -> d
 
 # --- Telegram (v6) ---
 
-VERDICTS = {"": "все", "new": "без оценки", "1": "интересно", "0": "мимо"}
-TG_PAGE = 50
-
-
-def tg_posts(conn: sqlite3.Connection, verdict: str = "", source: str = "", q: str = "",
-             page: int = 1) -> tuple[list[sqlite3.Row], int]:
-    where, args = [], []
-    if verdict == "new":
-        where.append("verdict IS NULL")
-    elif verdict in ("0", "1"):
-        where.append("verdict = ?")
-        args.append(int(verdict))
-    if source:
-        where.append("source = ?")
-        args.append(source)
-    if q:
-        where.append("text LIKE ?")
-        args.append(f"%{q}%")
-    sql_where = f"WHERE {' AND '.join(where)}" if where else ""
-    total = conn.execute(f"SELECT COUNT(*) FROM tg_posts {sql_where}", args).fetchone()[0]
-    rows = conn.execute(
-        f"SELECT * FROM tg_posts {sql_where} ORDER BY id DESC LIMIT ? OFFSET ?",
-        [*args, TG_PAGE, (max(page, 1) - 1) * TG_PAGE],
-    ).fetchall()
-    return rows, total
-
-
 def tg_by_source(conn: sqlite3.Connection, tz: str) -> list[sqlite3.Row]:
     """Per source: posts found in all and in the last 7 days, and the last one's time."""
     return conn.execute(
@@ -378,40 +315,6 @@ def tg_summary(conn: sqlite3.Connection, tz: str) -> dict:
 
 # --- job-site feeds (v9) ---
 
-FEED_PAGE = 50
-FEED_SHOW = {"matched": "подходят под слова", "all": "все из лент", "other": "не подошли"}
-
-
-def feed_jobs(conn: sqlite3.Connection, *, show: str = "matched", country: str = "", source: str = "",
-              verdict: str = "", q: str = "", page: int = 1) -> tuple[list[sqlite3.Row], int]:
-    where, args = [], []
-    if show == "matched":
-        where.append("matched = 1")
-    elif show == "other":
-        where.append("matched = 0")
-    if country:
-        where.append("country = ?")
-        args.append(country)
-    if source:
-        where.append("source = ?")
-        args.append(source)
-    if verdict == "new":
-        where.append("verdict IS NULL")
-    elif verdict in ("0", "1"):
-        where.append("verdict = ?")
-        args.append(int(verdict))
-    if q:
-        where.append("(title LIKE ? OR company LIKE ? OR summary LIKE ? OR categories LIKE ?)")
-        args += [f"%{q}%"] * 4
-    sql_where = f"WHERE {' AND '.join(where)}" if where else ""
-    total = conn.execute(f"SELECT COUNT(*) FROM feed_jobs {sql_where}", args).fetchone()[0]
-    rows = conn.execute(
-        f"SELECT * FROM feed_jobs {sql_where} ORDER BY id DESC LIMIT ? OFFSET ?",
-        [*args, FEED_PAGE, (max(page, 1) - 1) * FEED_PAGE],
-    ).fetchall()
-    return rows, total
-
-
 def feed_by_source(conn: sqlite3.Connection, tz: str) -> dict[str, sqlite3.Row]:
     rows = conn.execute(
         "SELECT source, COUNT(*) AS n, COALESCE(SUM(matched), 0) AS matched, COALESCE(SUM(created_at >= ?), 0) AS week,"
@@ -425,12 +328,148 @@ def feed_countries(conn: sqlite3.Connection) -> list[str]:
     return [r[0] for r in conn.execute("SELECT DISTINCT country FROM feed_jobs ORDER BY country")]
 
 
-def feed_summary(conn: sqlite3.Connection, tz: str) -> dict:
+def feed_summary(conn: sqlite3.Connection, tz: str, country: str = "") -> dict:
+    where, args = ("WHERE lower(country) = ?", [country.lower()]) if country else ("", [])
     row = conn.execute(
         "SELECT COALESCE(SUM(matched = 1 AND created_at >= ?), 0) AS today,"
         " COALESCE(SUM(matched = 1 AND created_at >= ?), 0) AS week,"
         " COALESCE(SUM(matched = 1 AND sent = 0), 0) AS pending, COALESCE(SUM(verdict = 1), 0) AS liked,"
-        " COUNT(*) AS total FROM feed_jobs",
-        (_day_start(tz), _day_start(tz, 6)),
+        f" COUNT(*) AS total FROM feed_jobs {where}",
+        [_day_start(tz), _day_start(tz, 6), *args],
     ).fetchone()
     return dict(row)
+
+
+# --- every vacancy in one list (v10): hh applications, Telegram posts and job-site feed items ---
+
+# Status groups shared by all sources; "" (all) leaves out "skip".
+BUCKETS = {"": "Все", "new": "Новые", "liked": "Интересные", "applied": "Отклик", "process": "В процессе",
+           "offer": "Оффер", "rejected": "Отказ", "skip": "Мимо"}
+JOBS_PAGE = 100
+TG_TAB = "tg"
+
+# kind: app (an application, from hh or sent by hand), tg or feed (found, not applied to yet).
+# src: the tab a row belongs to (hh account, "tg", feed country in lower case); origin: account, channel or feed key.
+# A post or feed item that got an application by hand shows only as that application.
+_JOBS = f"""
+SELECT 'app' AS kind, id, applied_at AS at, account AS src,
+       CASE source WHEN 'tg' THEN (SELECT p.source FROM tg_posts p WHERE CAST(p.id AS TEXT) = vacancy_id)
+                   WHEN 'feed' THEN (SELECT j.source FROM feed_jobs j WHERE CAST(j.id AS TEXT) = vacancy_id)
+                   ELSE account END AS origin,
+       name AS title, employer AS sub,
+       '' AS place, url, stage, stage_manual, NULL AS verdict, note, '' AS body, status, source,
+       CASE WHEN stage IS NULL THEN 'skip' WHEN stage IN ('{stages.SENT}', '{stages.VIEWED}') THEN 'applied'
+            WHEN stage = '{stages.OFFER}' THEN 'offer'
+            WHEN stage IN ('{stages.REJECTED}', '{stages.GHOSTED}') THEN 'rejected' ELSE 'process' END AS bucket,
+       name || ' ' || employer || ' ' || note AS search
+FROM applications
+UNION ALL
+SELECT 'tg', id, created_at, '{TG_TAB}', source, '', source, '', url, NULL, 0, verdict, '', text,
+       CASE WHEN sent = 0 THEN 'pending' ELSE '' END, 'tg',
+       CASE WHEN verdict IS NULL THEN 'new' WHEN verdict = 1 THEN 'liked' ELSE 'skip' END,
+       text
+FROM tg_posts WHERE CAST(id AS TEXT) NOT IN (SELECT vacancy_id FROM applications WHERE source = 'tg')
+UNION ALL
+SELECT 'feed', id, created_at, lower(country), source, title, company, location, url, NULL, 0, verdict, '', summary,
+       CASE WHEN matched = 1 AND sent = 0 THEN 'pending' WHEN matched = 0 THEN 'other' ELSE '' END, 'feed',
+       CASE WHEN matched = 0 OR verdict = 0 THEN 'skip' WHEN verdict = 1 THEN 'liked' ELSE 'new' END,
+       title || ' ' || company || ' ' || summary || ' ' || categories
+FROM feed_jobs WHERE CAST(id AS TEXT) NOT IN (SELECT vacancy_id FROM applications WHERE source = 'feed')
+"""
+
+
+@dataclass
+class JobsFilter:
+    src: str = ""          # "" = every source, an hh account, TG_TAB or a feed country ("rs")
+    bucket: str = ""       # a BUCKETS key
+    stage: str = ""        # exact stage, hh tabs only
+    origin: str = ""       # channel or feed key, Telegram and feed tabs only
+    q: str = ""
+    page: int = 1
+
+
+def _jobs_where(f: JobsFilter) -> tuple[str, list]:
+    clauses, args = [], []
+    if f.src:
+        clauses.append("src = ?")
+        args.append(f.src)
+    if f.bucket in BUCKETS and f.bucket:
+        clauses.append("bucket = ?")
+        args.append(f.bucket)
+    elif not f.stage:
+        clauses.append("bucket != 'skip'")
+    if f.stage:
+        clauses.append("stage = ?")
+        args.append(f.stage)
+    if f.origin:
+        clauses.append("origin = ?")
+        args.append(f.origin)
+    if f.q:
+        clauses.append("search LIKE ?")
+        args.append(f"%{f.q}%")
+    return ("WHERE " + " AND ".join(clauses)) if clauses else "", args
+
+
+def _title_of_post(text: str) -> tuple[str, str]:
+    """A Telegram post has no title: its first line is one, the rest is the body."""
+    lines = [line.strip() for line in (text or "").strip().splitlines()]
+    first = next((line for line in lines if line), "")
+    if len(first) > 140:
+        cut = first[:140].rsplit(" ", 1)[0]
+        return cut + "…", text.strip()
+    rest = "\n".join(lines[lines.index(first) + 1:]).strip() if first else ""
+    return first or "без текста", rest
+
+
+def jobs(conn: sqlite3.Connection, f: JobsFilter) -> tuple[list[dict], int]:
+    """One page of the merged list, newest first, and how many rows match."""
+    where, args = _jobs_where(f)
+    total = conn.execute(f"SELECT COUNT(*) FROM ({_JOBS}) {where}", args).fetchone()[0]
+    rows = conn.execute(
+        f"SELECT * FROM ({_JOBS}) {where} ORDER BY at DESC, id DESC LIMIT ? OFFSET ?",
+        [*args, JOBS_PAGE, (max(f.page, 1) - 1) * JOBS_PAGE],
+    ).fetchall()
+    out = []
+    for row in rows:
+        item = dict(row)
+        item.pop("search")
+        if item["kind"] == "tg":
+            item["title"], item["body"] = _title_of_post(item["body"])
+        out.append(item)
+    return out, total
+
+
+def jobs_counts(conn: sqlite3.Connection) -> dict[str, dict[str, int]]:
+    """{src: {bucket: n}} over everything, for the tab and chip numbers ("" = all sources, all buckets but skip)."""
+    counts: dict[str, dict[str, int]] = {"": {}}
+    for row in conn.execute(f"SELECT src, bucket, COUNT(*) AS n FROM ({_JOBS}) GROUP BY src, bucket"):
+        for key in (row["src"], ""):
+            per = counts.setdefault(key, {})
+            per[row["bucket"]] = per.get(row["bucket"], 0) + row["n"]
+    for per in counts.values():
+        per[""] = sum(n for b, n in per.items() if b not in ("", "skip"))
+    return counts
+
+
+def jobs_origins(conn: sqlite3.Connection, src: str) -> list[str]:
+    """Channels of the Telegram tab or feed keys of a country tab, for the drop-down."""
+    if src == TG_TAB:
+        return [r[0] for r in conn.execute("SELECT DISTINCT source FROM tg_posts ORDER BY source")]
+    return [r[0] for r in conn.execute("SELECT DISTINCT source FROM feed_jobs WHERE lower(country) = ? ORDER BY source",
+                                       (src,))]
+
+
+def new_since(conn: sqlite3.Connection, tz: str) -> dict:
+    """New (not yet rated) Telegram posts and matched feed items found today, for the overview."""
+    start = _day_start(tz)
+    tg = conn.execute("SELECT COUNT(*) FROM tg_posts WHERE verdict IS NULL AND created_at >= ?", (start,)).fetchone()[0]
+    feeds = conn.execute("SELECT COUNT(*) FROM feed_jobs WHERE verdict IS NULL AND matched = 1 AND created_at >= ?",
+                         (start,)).fetchone()[0]
+    return {"tg": tg, "feeds": feeds, "total": tg + feeds}
+
+
+def my_turn_chats(conn: sqlite3.Connection) -> int:
+    where, args = _chat_where(status="my_turn")
+    return conn.execute(
+        f"SELECT COUNT(*) FROM chats c LEFT JOIN applications a ON a.id = c.application_id {where}", args
+    ).fetchone()[0]

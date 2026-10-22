@@ -32,7 +32,7 @@
         sel.className = "stage s-" + row.stage;
         for (const o of sel.options) o.textContent = o.textContent.replace(" ✎", "");
         sel.selectedOptions[0].textContent += " ✎";
-        if (![...sel.options].some((o) => o.value === "__auto__")) sel.add(new Option("↺ вернуть автомат", "__auto__"));
+        if (!("byHand" in sel.dataset) && ![...sel.options].some((o) => o.value === "__auto__")) sel.add(new Option("↺ вернуть автомат", "__auto__"));
         flash(sel, true);
       } catch (e) { sel.value = sel.dataset.current; flash(sel, false); }
     });
@@ -138,7 +138,7 @@ document.querySelectorAll(".chat-open .thread, .panel .thread").forEach((t) => {
   });
 })();
 
-// v6: settings forms (Telegram, settings page), one-click actions and post verdicts, all as JSON.
+// Settings forms, one-click actions and verdicts, all as JSON.
 (function () {
   async function send(url, body) {
     const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -173,18 +173,24 @@ document.querySelectorAll(".chat-open .thread, .panel .thread").forEach((t) => {
       if (btn.dataset.confirm && !confirm(btn.dataset.confirm)) return;
       try {
         await send(btn.dataset.post, btn.dataset.body ? JSON.parse(btn.dataset.body) : {});
-        if (btn.dataset.done) { btn.textContent = btn.dataset.done; btn.disabled = true; } else location.reload();
+        if (btn.dataset.done) { btn.textContent = btn.dataset.done; btn.disabled = true; }
+        else if (btn.dataset.go) location.href = btn.dataset.go;
+        else location.reload();
       } catch (err) { showError(btn.closest(".panel"), err); }
     });
   });
 
-  document.querySelectorAll(".post [data-verdict]").forEach((btn) => {
+  // 👍 / 👎 on a Telegram post or a feed item in the vacancy list; a second click clears it.
+  const VERDICT = { 1: ["liked", "интересная"], 0: ["skip", "мимо"], null: ["new", "новая"] };
+  document.querySelectorAll("[data-verdict-url] [data-verdict]").forEach((btn) => {
     btn.addEventListener("click", async () => {
-      const post = btn.closest(".post");
-      const value = btn.classList.contains("on") ? null : Number(btn.dataset.verdict);  // a second click clears it
+      const row = btn.closest("[data-verdict-url]");
+      const value = btn.classList.contains("on") ? null : Number(btn.dataset.verdict);
       try {
-        await send(post.dataset.verdictUrl || `/api/telegram/posts/${post.dataset.id}/verdict`, { verdict: value });
-        post.querySelectorAll("[data-verdict]").forEach((b) => b.classList.toggle("on", value !== null && Number(b.dataset.verdict) === value));
+        await send(row.dataset.verdictUrl, { verdict: value });
+        row.querySelectorAll("[data-verdict]").forEach((b) => b.classList.toggle("on", value !== null && Number(b.dataset.verdict) === value));
+        const st = row.querySelector(".st");
+        if (st) { st.className = "st b-" + VERDICT[value][0]; st.textContent = VERDICT[value][1]; }
       } catch (err) { btn.classList.add("failed"); }
     });
   });

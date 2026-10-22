@@ -2,11 +2,22 @@
 {% from "_macros.html" import hold_banner %}
 {% block title %}Настройки · JobPilot{% endblock %}
 {% block body %}
+{% set titles = {'general': 'Общее', 'captcha': 'Капча hh', 'telegram': 'Телеграм', 'feeds': 'Ленты сайтов'} %}
 {{ hold_banner(hold) }}
-<h1>Настройки</h1>
+<h1 class="page-h">Настройки{% if section != 'general' %} <em>{{ titles.get(section) or ('hh · ' ~ card.name) }}</em>{% endif %}</h1>
+<div class="split">
+  <nav class="side" aria-label="Разделы настроек">
+    <a href="/settings" {% if section == 'general' %}class="on"{% endif %}>Общее</a>
+    <span class="cap">hh</span>
+    {% for n in account_names %}<a href="/settings/hh/{{ n }}" {% if section == 'hh' and card.name == n %}class="on"{% endif %}>{{ n }}</a>{% endfor %}
+    <a href="/settings/captcha" {% if section == 'captcha' %}class="on"{% endif %}>Капча{% if hold.captcha_until %} <span class="badge">!</span>{% endif %}</a>
+    <span class="cap">без отклика</span>
+    <a href="/settings/telegram" {% if section == 'telegram' %}class="on"{% endif %}>Телеграм</a>
+    <a href="/settings/feeds" {% if section == 'feeds' %}class="on"{% endif %}>Ленты</a>
+  </nav>
+  <div class="sections">
+{% if section == 'general' %}
 <p class="muted small">Бот и hh-воркер читают эти настройки сами: лимиты и слова действуют со следующего прохода, режим и паузы сразу. Перезапуск не нужен.</p>
-
-<div class="grid2">
   <form class="panel form" data-api="/api/settings">
     <h3>Общее</h3>
     <label class="check"><input type="checkbox" name="paused" {% if hold.paused %}checked{% endif %}> Пауза всего: отклики hh, напоминания и Телеграм <span class="muted small">(как /pause в боте)</span></label>
@@ -21,7 +32,9 @@
     <div class="actions"><button>Сохранить</button></div>
   </form>
 
-  <section class="panel">
+  {% if not account_names %}<p class="muted">Нет {{ file }}: hh-часть выключена.</p>{% endif %}
+{% elif section == 'captcha' %}
+<section class="panel">
     <h3>Капча hh</h3>
     {% if hold.captcha_until %}
     <p>Оба аккаунта стоят до <b>{{ hold.captcha_until | local }}</b> (капча {{ strikes }} раз подряд).</p>
@@ -32,15 +45,11 @@
     <p class="muted">Капчи сейчас нет, hh работает по расписанию.</p>
     {% endif %}
   </section>
-</div>
-
-<h2>Аккаунты hh</h2>
-{% if not cards %}<p class="muted">Нет {{ file }}: hh-часть выключена.</p>{% endif %}
-<div class="grid2">
-  {% for c in cards %}
+{% elif section == 'hh' %}
+  {% set c = card %}
   {% set a = c.account %}
   <form class="panel form" data-api="/api/settings/account/{{ c.name }}">
-    <h3><a href="/account/{{ c.name }}">{{ c.name }}</a>
+    <h3><a href="/jobs?src={{ c.name }}">hh · {{ c.name }}</a>
       <span class="muted small">· сегодня {{ c.today }}{% if c.limit %} из {{ c.limit }}{% endif %}</span>
       {% if c.changed %}<span class="pill s-invitation">изменено на сайте</span>{% endif %}</h3>
     <label class="check"><input type="checkbox" name="paused" {% if c.paused %}checked{% endif %}> Пауза откликов и напоминаний этого аккаунта <span class="muted small">(чаты читаются дальше)</span></label>
@@ -65,6 +74,126 @@
       {% if c.changed %}<button type="button" class="ghost" data-post="/api/settings/account/{{ c.name }}" data-body='{"reset": true}' data-confirm="Вернуть значения из accounts.toml?">Вернуть как в accounts.toml</button>{% endif %}
     </div>
   </form>
-  {% endfor %}
+{% elif section == 'telegram' %}
+{% if tg_paused and not hold.paused %}<div class="banner warn">Телеграм-мониторинг на паузе: новые посты не сохраняются и не приходят.</div>{% endif %}
+<div class="grid2">
+  <form class="panel form" data-api="/api/telegram">
+    <h3>Мониторинг</h3>
+    <label class="check"><input type="checkbox" name="paused" {% if tg_paused %}checked{% endif %}> Пауза Телеграма <span class="muted small">(hh продолжает работать)</span></label>
+    <div class="row">
+      <label>Режим
+        <select name="mode">
+          <option value="realtime" {% if mode == 'realtime' %}selected{% endif %}>сразу, по одной</option>
+          <option value="digest" {% if mode == 'digest' %}selected{% endif %}>дайджест раз в день</option>
+        </select></label>
+      <label>Время дайджеста <input type="time" name="digest_time" value="{{ digest_time }}" required></label>
+    </div>
+    <label>Нужно хотя бы одно слово <span class="muted small">(через запятую; пусто = любые вакансии)</span>
+      <textarea name="include" rows="2">{{ include | join(', ') }}</textarea></label>
+    <label>Отбросить, если есть слово
+      <textarea name="exclude" rows="2">{{ exclude | join(', ') }}</textarea></label>
+    <p class="muted small">Слова ищутся целиком, без учёта регистра, «ё» = «е». Это фильтр только для Телеграма, у откликов hh свои слова в разделах php и go.</p>
+    <p class="error" hidden></p>
+    <div class="actions">
+      <button>Сохранить</button>
+      <button type="button" class="ghost" data-post="/api/telegram/digest" data-done="Бот пришлёт дайджест в течение минуты" {% if digest_requested %}disabled{% endif %}>
+        {{ 'Дайджест уже запрошен' if digest_requested else 'Прислать дайджест сейчас' }}</button>
+    </div>
+  </form>
+
+  <form class="panel form" data-api="/api/telegram">
+    <h3>Источники</h3>
+    <label>Папка Телеграма на аккаунте юзербота
+      <input name="folder" value="{{ folder or '' }}" maxlength="64" placeholder="без папки"></label>
+    {% if env_folder and (folder or '') != env_folder %}<p class="muted small">В .env указана папка «{{ env_folder }}», сейчас действует значение с сайта.</p>{% endif %}
+    <label>Ещё каналы и чаты <span class="muted small">(@username, ссылка t.me/… или id, по одному в строке)</span>
+      <textarea name="sources" rows="4" placeholder="@remote_jobs">{{ extra | join('\n') }}</textarea></label>
+    {% if env_sources %}<p class="muted small">Из .env (TG_SOURCES): {{ env_sources | join(', ') }}</p>{% endif %}
+    <p class="muted small">Юзербот должен состоять в чате. Закрытый чат проще добавить в папку. Изменения подхватываются в течение 5 минут.</p>
+    <p class="error" hidden></p>
+    <div class="actions"><button>Сохранить</button></div>
+  </form>
+</div>
+
+<div class="grid2">
+  <section class="panel">
+    <h3>Что слушает юзербот {% if seen.at %}<span class="muted small">· обновлено {{ seen.at | local }}</span>{% endif %}</h3>
+    {% if seen.unresolved %}<p class="error small">Не найдены: {{ seen.unresolved | join(', ') }}</p>{% endif %}
+    {% if seen.names %}
+    <ul class="tags">{% for n in seen.names %}<li>{{ n }}</li>{% endfor %}</ul>
+    {% elif seen.at %}<p class="muted">Ни одного источника.</p>
+    {% else %}<p class="muted">Бот ещё не отчитался: список появится после перезапуска сервиса с этой версией.</p>{% endif %}
+  </section>
+  <section class="panel">
+    <h3>Откуда приходят вакансии</h3>
+    <div class="scroll flat">
+    <table class="apps small-table">
+      <tr><th>Источник</th><th>Всего</th><th>За 7 дней</th><th>Последняя</th></tr>
+      {% for s in by_source %}
+      <tr><td><a href="/jobs?src=tg&amp;from={{ s.source | urlencode }}">{{ s.source }}</a></td><td>{{ s.n }}</td><td>{{ s.week or 0 }}</td><td class="nowrap muted">{{ s.last | local }}</td></tr>
+      {% else %}
+      <tr><td colspan="4" class="muted">Пока ничего не найдено.</td></tr>
+      {% endfor %}
+    </table>
+    </div>
+  </section>
+</div>
+
+{% elif section == 'feeds' %}
+{% if feeds_paused and not hold.paused %}<div class="banner warn">Ленты на паузе: сайты вакансий не читаются.</div>{% endif %}
+<p class="muted">RSS сайтов вакансий по странам. Только чтение: откликаться на сайте руками. Подходящие под слова приходят в Телеграм так же, как посты из чатов: {{ 'сразу' if mode == 'realtime' else 'в дайджесте в ' ~ digest_time }} (режим в разделе <a href="/settings/telegram">Телеграм</a>).</p>
+<div class="grid2">
+  <form class="panel form" data-api="/api/feeds">
+    <h3>Фильтр</h3>
+    <label class="check"><input type="checkbox" name="paused" {% if feeds_paused %}checked{% endif %}> Пауза лент <span class="muted small">(Телеграм и hh работают)</span></label>
+    <label>Нужно хотя бы одно слово <span class="muted small">(через запятую; пусто = все вакансии)</span>
+      <textarea name="include" rows="2">{{ include | join(', ') }}</textarea></label>
+    <label>Отбросить, если есть слово
+      <textarea name="exclude" rows="2">{{ exclude | join(', ') }}</textarea></label>
+    <p class="muted small">Слова ищутся в названии вакансии и её категориях, целиком, без учёта регистра. Не подошедшие тоже сохраняются: они в разделе Вакансии под фильтром «Мимо».</p>
+    <p class="error" hidden></p>
+    <div class="actions"><button>Сохранить</button></div>
+  </form>
+
+  <form class="panel form" data-api="/api/feeds">
+    <h3>Свои ленты</h3>
+    <label>По одной в строке: <code>страна | название | адрес | минуты</code>
+      <textarea name="extra" rows="4" placeholder="RS | Joberty | https://example.com/jobs.rss | 60">{{ extra_lines }}</textarea></label>
+    <p class="muted small">Страна двумя буквами (RS, ME, DE…). <code>#</code> в начале строки выключает ленту, не удаляя. Чаще раза в {{ min_interval }} минут ни одна лента не читается.</p>
+    <p class="error" hidden></p>
+    <div class="actions"><button>Сохранить</button></div>
+  </form>
+</div>
+
+<form class="panel form" data-api="/api/feeds">
+  <h3>Источники</h3>
+  <div class="scroll flat">
+  <table class="apps small-table">
+    <tr><th>Вкл.</th><th>Лента</th><th>Страна</th><th>Раз в, мин</th><th>Последнее чтение</th><th>Найдено</th><th></th></tr>
+    {% for f in feeds %}{% set s = f.source %}{% set st = f.state %}
+    <tr>
+      <td><input type="checkbox" name="enabled:{{ s.key }}" {% if s.enabled %}checked{% endif %} {% if not s.builtin %}disabled title="своя лента: выключается знаком # в списке выше"{% endif %}></td>
+      <td><b>{{ s.name }}</b>{% if s.note %}<br><span class="muted small">{{ s.note }}</span>{% endif %}
+        {% if s.builtin %}<br><input name="url:{{ s.key }}" value="{{ s.url }}" maxlength="500" class="small">
+        {% else %}<br><a class="small muted" href="{{ s.url }}" target="_blank" rel="noopener">{{ s.url }}</a>{% endif %}</td>
+      <td>{{ country_name(s.country) }}</td>
+      <td>{% if s.builtin %}<input type="number" name="interval:{{ s.key }}" value="{{ s.interval }}" min="{{ min_interval }}" max="10080" style="width:6em">{% else %}{{ s.interval }}{% endif %}</td>
+      <td class="nowrap small">
+        {% if st.last_at %}{{ st.last_at | local }}{% else %}<span class="muted">ещё не читалась</span>{% endif %}
+        {% if st.error %}<br><span class="error">ошибка ×{{ st.errors }}: {{ st.error }}</span>{% elif st.ok_at %}<br><span class="muted">в ленте {{ st.count or 0 }}</span>{% endif %}
+        {% if st.next_at and s.enabled %}<br><span class="muted">следующее ≈ {{ st.next_at | local }}</span>{% endif %}</td>
+      <td class="small">{% if f.counts %}<a href="/jobs?src={{ s.country | lower }}&amp;from={{ s.key }}">{{ f.counts.n }}</a>, подходят {{ f.counts.matched }}{% else %}0{% endif %}</td>
+      <td><button type="button" class="ghost small" data-post="/api/feeds/{{ s.key }}/now" data-done="прочитаю в течение 5 минут" {% if not s.enabled %}disabled{% endif %}>прочитать сейчас</button></td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  <p class="muted small">Проверить все ленты без записи в базу: <code>docker compose run --rm jobpilot jobpilot feeds-check</code>.</p>
+  <p class="error" hidden></p>
+  <div class="actions"><button>Сохранить</button></div>
+</form>
+
+{% endif %}
+  </div>
 </div>
 {% endblock %}

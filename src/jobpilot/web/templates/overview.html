@@ -1,30 +1,36 @@
 {% extends "base.html" %}
-{% from "_macros.html" import funnel, bars, hold_banner, pill, interview_line %}
+{% from "_macros.html" import bars, hold_banner, pill, overview_head %}
 {% block body %}
 {{ hold_banner(hold) }}
-<section class="cards">
-  <div class="card"><span class="n">{{ total.today }}</span><span class="l">откликов сегодня</span></div>
-  <div class="card"><span class="n">{{ total.week }}</span><span class="l">за 7 дней</span></div>
-  <div class="card"><span class="n">{{ total.total }}</span><span class="l">всего отправлено</span></div>
-  <div class="card"><span class="n">{{ total.answered }}</span><span class="l">ответили ({{ total.answer_rate }}%)</span></div>
+{% set title %}Сегодня <em>{{ total.today }}</em> {{ total.today | plural('отклик', 'отклика', 'откликов') }}{% endset %}
+{{ overview_head(title, 'summary') }}
+
+<div class="nums">
+  {% for name in accounts %}{% set s = per_account[name] %}
+  <div><b>{{ s.today }}{% if s.limit %}<small> / {{ s.limit }}</small>{% endif %}</b><a class="cap" href="/jobs?src={{ name }}">hh {{ name }} сегодня</a></div>
+  {% endfor %}
+  <div><b>{{ found.total }}</b><a class="cap" href="/jobs?st=new">новых из ТГ и лент</a></div>
+  <div><b>{{ total.week }}</b><span class="cap">откликов за 7 дней</span></div>
+  <div><b>{{ total.answer_rate }}%</b><span class="cap">ответили ({{ total.answered }} из {{ total.total }})</span></div>
+</div>
+
+<section class="att">
+  <h2 class="cap">Требует внимания</h2>
+  {% for a in attention %}
+  <a href="{{ a.href }}"><b>{{ a.n }}</b><span>{{ a.text }}</span><span class="go-to">{{ a.go }} →</span></a>
+  {% else %}
+  <p class="muted">Ничего срочного: новых сообщений и собеседований на неделе нет.</p>
+  {% endfor %}
 </section>
 
-{% if upcoming %}
-<section class="panel upcoming">
-  <h3>Ближайшие собеседования <a class="small" href="/calendar">календарь</a></h3>
-  <ul class="changes ivs">{% for i in upcoming %}{{ interview_line(i) }}{% endfor %}</ul>
-</section>
-{% endif %}
-
-<h2>Воронка по аккаунтам <a class="small" href="/stats">все графики</a></h2>
 <div class="grid2">
   {% for name in accounts %}
   {% set s = per_account[name] %}
   <section class="panel">
-    <h3><a href="/account/{{ name }}">{{ name }}</a> <span class="muted">· {{ s.total }} отправлено, {{ s.today }} сегодня</span></h3>
+    <h3><a href="/jobs?src={{ name }}">hh · {{ name }}</a> <span class="muted small">{{ s.total }} отправлено, {{ s.today }} сегодня</span></h3>
     <div class="funnel compact">
       {% for st in STAGE_ORDER %}{% set n = s.by_stage.get(st, 0) %}
-      <a class="step s-{{ st }}" href="/account/{{ name }}?stage={{ st }}#table"><span class="n">{{ n }}</span><span class="l">{{ LABELS[st] }}</span>
+      <a class="step s-{{ st }}" href="/jobs?src={{ name }}&amp;stage={{ st }}"><span class="n">{{ n }}</span><span class="l">{{ LABELS[st] }}</span>
         <span class="bar"><i style="width: {{ (100 * n / s.total) | round(1) if s.total else 0 }}%"></i></span></a>
       {% endfor %}
     </div>

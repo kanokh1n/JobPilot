@@ -28,7 +28,7 @@ jobpilot = "jobpilot.__main__:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"jobpilot.web" = ["templates/*.html", "static/*"]
+"jobpilot.web" = ["templates/*.html", "static/*.css", "static/*.js", "static/fonts/*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

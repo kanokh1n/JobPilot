@@ -34,13 +34,13 @@ def _run(tmp_path, scenario):
 
 
 async def _login(client):
-    r = await client.post("/login", data={"password": PASSWORD, "next": "/stages"}, allow_redirects=False)
-    assert r.status == 302 and r.headers["Location"] == "/stages"
+    r = await client.post("/login", data={"password": PASSWORD, "next": "/jobs"}, allow_redirects=False)
+    assert r.status == 302 and r.headers["Location"] == "/jobs"
 
 
 def test_pages_need_the_password(tmp_path):
     async def scenario(client, db):
-        r = await client.get("/stages", allow_redirects=False)
+        r = await client.get("/jobs", allow_redirects=False)
         assert r.status == 302 and r.headers["Location"].startswith("/login")
         r = await client.post("/api/applications/1/stage", json={"stage": "offer"})
         assert r.status == 401
@@ -66,17 +66,26 @@ def test_pages_show_both_accounts(tmp_path):
         await _login(client)
         overview = await client.get("/")
         text = await overview.text()
-        assert overview.status == 200 and "/account/php" in text and "/account/go" in text
-        stages_page = await (await client.get("/stages")).text()
-        assert "PHP dev" in stages_page and "Go dev" in stages_page and "Bitrix" not in stages_page
-        assert "Gamma &lt;b&gt;" in stages_page  # escaped
-        skipped = await (await client.get(f"/stages?stage={queries.NOT_APPLIED}")).text()
+        assert overview.status == 200 and "/jobs?src=php" in text and "/jobs?src=go" in text
+        jobs = await (await client.get("/jobs")).text()
+        assert "PHP dev" in jobs and "Go dev" in jobs and "Bitrix" not in jobs
+        assert "Gamma &lt;b&gt;" in jobs  # escaped
+        assert "hh · php<sup>1</sup>" in jobs and "hh · go<sup>1</sup>" in jobs and "Все<sup>2</sup>" in jobs
+        skipped = await (await client.get("/jobs?st=skip")).text()
         assert "Bitrix" in skipped and "PHP dev" not in skipped
-        php = await (await client.get("/account/php")).text()
-        assert "PHP dev" in php and "Go dev" not in php
-        assert (await client.get("/account/nobody")).status == 404
-        detail = await (await client.get("/application/1")).text()
-        assert "Здравствуйте" in detail
+        php = await (await client.get("/jobs?src=php")).text()
+        assert "PHP dev" in php and "Go dev" not in php and "сегодня" in php
+        rejected = await (await client.get("/jobs?st=rejected")).text()
+        assert "Go dev" in rejected and "PHP dev" not in rejected
+        assert "PHP dev" not in await (await client.get("/jobs?src=php&stage=rejected")).text()
+        # the old pages lead to the new section
+        for old, new in (("/account/php?stage=sent", "/jobs?src=php&stage=sent"), ("/stages?stage=none", "/jobs?st=skip"),
+                         ("/stages?account=go&q=Go", "/jobs?src=go&q=Go"), ("/telegram?verdict=1", "/jobs?src=tg&st=liked"),
+                         ("/stats?days=7", "/?view=charts&days=7")):
+            r = await client.get(old, allow_redirects=False)
+            assert r.status == 302 and r.headers["Location"] == new, old
+        assert "Здравствуйте" in await (await client.get("/application/1")).text()
+        assert "/jobs?src=php" in await (await client.get("/application/1")).text()  # the way back
 
     _run(tmp_path, scenario)
 
@@ -93,7 +102,7 @@ def test_manual_stage_sticks_and_can_be_released(tmp_path):
         assert body["manual"] is False and body["stage"] == stages.VIEWED
         r = await client.post("/api/applications/1/stage", json={"stage": "тестовое"})
         assert (await r.json())["stage"] == "тестовое"
-        assert "тестовое" in await (await client.get("/stages")).text()
+        assert "тестовое" in await (await client.get("/jobs")).text()
 
     _run(tmp_path, scenario)
 
@@ -106,7 +115,7 @@ def test_note_and_csrf_guard(tmp_path):
         r = await client.post("/api/applications/1/note", json={"note": "созвон во вторник"})
         assert r.status == 200 and db.application(1)["note"] == "созвон во вторник"
         assert (await client.post("/api/applications/999/note", json={"note": "x"})).status == 404
-        assert "созвон" in await (await client.get("/stages?q=созвон")).text()
+        assert "созвон" in await (await client.get("/jobs?q=созвон")).text()
 
     _run(tmp_path, scenario)
 
@@ -138,3 +147,10 @@ def test_chats_pages(tmp_path):
         assert "Приглашаем" in await (await client.get("/application/1")).text()
 
     _run(tmp_path, scenario)
+
+
+def test_post_title_is_its_first_line():
+    assert queries._title_of_post("\n  #вакансия Go developer  \nУдалённо\nдо 300k") == ("#вакансия Go developer", "Удалённо\nдо 300k")
+    title, body = queries._title_of_post("слово " * 40)
+    assert title.endswith("…") and len(title) <= 141 and body.startswith("слово")
+    assert queries._title_of_post("") == ("без текста", "")

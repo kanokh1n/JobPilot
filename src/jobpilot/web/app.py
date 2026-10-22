@@ -112,12 +112,18 @@ def _templates(tz: str) -> jinja2.Environment:
         except ValueError:
             return value
 
+    def plural(n: int, one: str, few: str, many: str) -> str:
+        n = abs(int(n))
+        if n % 10 == 1 and n % 100 != 11:
+            return one
+        return few if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14 else many
+
     env.filters["local"] = local
+    env.filters["plural"] = plural
     env.globals["bar_path"] = charts.bar_path
     env.globals.update(
         LABELS=stages.LABELS,
         STAGE_ORDER=queries.STAGE_ORDER,
-        NOT_APPLIED=queries.NOT_APPLIED,
         label=lambda s: stages.LABELS.get(s, s) if s else "не отправлен",
     )
     return env
@@ -194,28 +200,11 @@ async def logout(request: web.Request) -> web.Response:
 
 # --- pages ---
 
-def _filter(request: web.Request, account: str = "") -> queries.Filter:
-    q = request.query
+def _page(request: web.Request) -> int:
     try:
-        page = int(q.get("page", "1"))
+        return max(int(request.query.get("page", "1")), 1)
     except ValueError:
-        page = 1
-    return queries.Filter(account=account or q.get("account", ""), stage=q.get("stage", ""),
-                          q=q.get("q", "").strip(), page=page)
-
-
-def _table_context(request: web.Request, f: queries.Filter) -> dict:
-    conn = request.app[SITE].db.conn
-    rows, total = queries.applications(conn, f)
-    pages = max((total + queries.PAGE - 1) // queries.PAGE, 1)
-
-    def page_url(n: int) -> str:
-        params = {k: v for k, v in {"account": f.account if request.path == "/stages" else "",
-                                    "stage": f.stage, "q": f.q, "page": n}.items() if v}
-        return f"{request.path}?{urlencode(params)}"
-
-    return {"rows": rows, "total": total, "filter": f, "pages": pages, "page_url": page_url,
-            "custom_stages": queries.custom_stages(conn)}
+        return 1
 
 
 def _hold(site: Site) -> dict:
@@ -225,11 +214,54 @@ def _hold(site: Site) -> dict:
             "accounts_paused": [n for n in site.configured_accounts() if hh_accounts.paused(site.db, n)]}
 
 
+def _attention(site: Site) -> list[dict]:
+    """What needs a look today, newest worry first; empty when nothing does."""
+    conn = site.db.conn
+    items = []
+    hold = captcha_hold(site.db, datetime.now(timezone.utc))
+    if hold:
+        items.append({"n": "!", "text": "hh показал капчу, отклики стоят до " + hold.astimezone(ZoneInfo(site.tz))
+                      .strftime("%d.%m %H:%M"), "href": "/settings/captcha", "go": "Настройки"})
+    unread, my_turn = queries.unread_total(conn), queries.my_turn_chats(conn)
+    if unread or my_turn:
+        text = "непрочитанных сообщений в чатах hh" if unread else "чатов ждут вашего ответа"
+        if unread and my_turn:
+            text += f", в {my_turn} ждут вашего ответа"
+        items.append({"n": unread or my_turn, "text": text, "href": "/chats?status=" + ("unread" if unread else "my_turn"),
+                      "go": "Чаты"})
+    found = queries.new_since(conn, site.tz)
+    if found["total"]:
+        items.append({"n": found["total"], "text": "новых вакансий из Телеграма и лент сегодня, ждут 👍 или 👎",
+                      "href": "/jobs?st=new", "go": "Вакансии"})
+    zone = ZoneInfo(site.tz)
+    week = datetime.now(timezone.utc) + timedelta(days=7)
+    for i in queries.upcoming_interviews(conn, 3):
+        at = datetime.fromisoformat(i["starts_at"])
+        if at > week:
+            break
+        who = i["employer"] or i["title"] or i["name"] or "собеседование"
+        items.append({"n": at.astimezone(zone).strftime("%d.%m"), "text": f"в {at.astimezone(zone):%H:%M} собеседование, "
+                      + who + (f", аккаунт {i['account']}" if i["account"] else ""),
+                      "href": f"/calendar/{i['id']}", "go": "Календарь"})
+    pending = len(interviews.candidates(site.db, site.tz))
+    if pending:
+        items.append({"n": pending, "text": "собеседований без даты в календаре", "href": "/calendar", "go": "Календарь"})
+    return items
+
+
 async def overview(request: web.Request) -> web.Response:
+    """Summary of the day, or the charts (?view=charts)."""
+    if request.query.get("view") == "charts":
+        return await stats_page(request)
     site: Site = request.app[SITE]
     conn = site.db.conn
     names = queries.accounts(conn, list(site.configured_accounts()))
-    per_account = {name: queries.summary(conn, site.tz, name) for name in names}
+    configured = site.configured_accounts()
+    per_account = {}
+    for name in names:
+        s = queries.summary(conn, site.tz, name)
+        s["limit"] = _today_limit(site, configured[name]) if name in configured else None
+        per_account[name] = s
     return _render(
         request, "overview.html",
         accounts=names,
@@ -238,38 +270,129 @@ async def overview(request: web.Request) -> web.Response:
         daily=queries.daily(conn, site.tz),
         changes=queries.recent_changes(conn),
         hold=_hold(site),
-        upcoming=queries.upcoming_interviews(conn, 5),
+        attention=_attention(site),
+        found=queries.new_since(conn, site.tz),
     )
 
 
-async def account_page(request: web.Request) -> web.Response:
-    site: Site = request.app[SITE]
-    name = request.match_info["name"]
+# Chips each kind of tab shows, in this order.
+TAB_BUCKETS = {
+    "all": ("", "new", "liked", "applied", "process", "offer", "rejected", "skip"),
+    "hh": ("", "applied", "process", "offer", "rejected", "skip"),
+    "tg": ("", "new", "liked", "applied", "process", "offer", "rejected", "skip"),
+    "feed": ("", "new", "liked", "applied", "process", "offer", "rejected", "skip"),
+}
+APPLIED_BUCKETS = ("applied", "process", "offer", "rejected")
+
+
+def _tabs(site: Site, counts: dict) -> list[dict]:
+    """Все, one tab per hh account, Telegram, one tab per feed country."""
     names = queries.accounts(site.db.conn, list(site.configured_accounts()))
-    if name not in names:
-        raise web.HTTPNotFound(text="нет такого аккаунта")
-    account = site.configured_accounts().get(name)
-    limit = None
-    if account is not None:
-        first = site.db.get(f"hh_start:{name}")
-        if first:
-            limit = daily_limit(account, datetime.fromisoformat(first), datetime.now(ZoneInfo(site.tz)))
-    f = _filter(request, name)
+    tabs = [{"key": "", "label": "Все", "kind": "all"}]
+    tabs += [{"key": n, "label": f"hh · {n}", "kind": "hh"} for n in names]
+    tabs.append({"key": queries.TG_TAB, "label": "Телеграм", "kind": "tg"})
+    countries = [s.country for s in feed_sources.all_sources(site.db) if s.enabled] + queries.feed_countries(site.db.conn)
+    for code in dict.fromkeys(c.lower() for c in countries if c):
+        if code not in names and code != queries.TG_TAB:
+            tabs.append({"key": code, "label": feed_sources.country_name(code.upper()), "kind": "feed"})
+    for tab in tabs:
+        tab["n"] = counts.get(tab["key"], {}).get("", 0)
+    return tabs
+
+
+def _tab_summary(site: Site, tab: dict) -> dict:
+    """The numbers above the list of one source."""
+    db, conn = site.db, site.db.conn
+    if tab["kind"] == "hh":
+        name = tab["key"]
+        account = site.configured_accounts().get(name)
+        return {"s": queries.summary(conn, site.tz, name), "limit": _today_limit(site, account) if account else None,
+                "per_pass": account.per_pass if account else None, "paused": hh_accounts.paused(db, name),
+                "configured": account is not None}
+    if tab["kind"] == "tg":
+        return {"s": queries.tg_summary(conn, site.tz), "seen": tg_sources.seen(db),
+                "paused": db.get(tg_sources.PAUSED) == "1", "mode": db.get("mode"), "digest_time": db.get("digest_time")}
+    if tab["kind"] == "feed":
+        feeds = [{"source": s, "state": feed_sources.state(db, s.key)} for s in feed_sources.all_sources(db)
+                 if s.country.lower() == tab["key"]]
+        return {"s": queries.feed_summary(conn, site.tz, tab["key"]), "feeds": feeds,
+                "paused": db.get(feed_sources.PAUSED) == "1"}
+    return {}
+
+
+async def jobs_page(request: web.Request) -> web.Response:
+    """Every vacancy in one list: hh applications, Telegram posts and job-site feeds, a tab per source."""
+    site: Site = request.app[SITE]
+    conn = site.db.conn
+    query = request.query
+    counts = queries.jobs_counts(conn)
+    tabs = _tabs(site, counts)
+    tab = next((t for t in tabs if t["key"] == query.get("src", "")), tabs[0])
+    bucket = query.get("st", "")
+    bucket = bucket if bucket in TAB_BUCKETS[tab["kind"]] else ""
+    f = queries.JobsFilter(src=tab["key"], bucket=bucket,
+                           stage=query.get("stage", "")[:40] if tab["kind"] == "hh" else "",
+                           origin=query.get("from", "")[:64] if tab["kind"] in ("tg", "feed") else "",
+                           q=query.get("q", "").strip()[:100], page=_page(request))
+    rows, total = queries.jobs(conn, f)
+    pages = max((total + queries.JOBS_PAGE - 1) // queries.JOBS_PAGE, 1)
+    params = {"src": f.src, "st": f.bucket, "stage": f.stage, "from": f.origin, "q": f.q}
+
+    def url(**changes) -> str:
+        values = {k: v for k, v in {**params, **changes}.items() if v}
+        return "/jobs" + (f"?{urlencode(values)}" if values else "")
+
+    here = counts.get(tab["key"], {})
+    applied_here = sum(here.get(b, 0) for b in APPLIED_BUCKETS)
+    chips = [{"key": b, "label": queries.BUCKETS[b], "n": here.get(b, 0)} for b in TAB_BUCKETS[tab["kind"]]]
+    chips = [c for c in chips if c["n"] or not c["key"] or c["key"] == f.bucket]
+    feed_names = {s.key: s.name for s in feed_sources.all_sources(site.db)}
     return _render(
-        request, "account.html",
-        name=name,
-        summary=queries.summary(site.db.conn, site.tz, name),
-        daily=queries.daily(site.db.conn, site.tz, account=name),
-        limit=limit,
-        per_pass=account.per_pass if account else None,
-        hold=_hold(site),
-        account_paused=hh_accounts.paused(site.db, name),
-        **_table_context(request, f),
+        request, "jobs.html", tabs=tabs, tab=tab, rows=rows, total=total, f=f, pages=pages, url=url, chips=chips,
+        summary=_tab_summary(site, tab), hold=_hold(site), custom_stages=queries.custom_stages(conn),
+        origins=queries.jobs_origins(conn, tab["key"]) if tab["kind"] in ("tg", "feed") else [],
+        feed_names=feed_names, country_name=feed_sources.country_name, applied_here=applied_here,
     )
 
 
-async def stages_page(request: web.Request) -> web.Response:
-    return _render(request, "stages.html", **_table_context(request, _filter(request)))
+# --- old addresses: the pages that the Вакансии section and the settings replaced ---
+
+def _moved(target: str, **params) -> web.HTTPFound:
+    values = {k: v for k, v in params.items() if v}
+    return web.HTTPFound(target + (f"?{urlencode(values)}" if values else ""))
+
+
+_VERDICT_BUCKET = {"new": "new", "1": "liked", "0": "skip"}
+
+
+async def old_stages(request: web.Request) -> web.Response:
+    q = request.query
+    raise _moved("/jobs", src=q.get("account", ""), stage=q.get("stage", "") if q.get("stage") != "none" else "",
+                 st="skip" if q.get("stage") == "none" else "", q=q.get("q", ""))
+
+
+async def old_account(request: web.Request) -> web.Response:
+    q = request.query
+    raise _moved("/jobs", src=request.match_info["name"], stage=q.get("stage", ""), q=q.get("q", ""))
+
+
+async def old_telegram(request: web.Request) -> web.Response:
+    q = request.query
+    raise _moved("/jobs", src=queries.TG_TAB, st=_VERDICT_BUCKET.get(q.get("verdict", ""), ""),
+                 **{"from": q.get("source", ""), "q": q.get("q", "")})
+
+
+async def old_feeds(request: web.Request) -> web.Response:
+    q = request.query
+    countries = q.get("country", "") or next(iter(queries.feed_countries(request.app[SITE].db.conn)), "")
+    countries = countries or next((s.country for s in feed_sources.all_sources(request.app[SITE].db)), "")
+    raise _moved("/jobs", src=countries.lower(), st="skip" if q.get("show") == "other" else
+                 _VERDICT_BUCKET.get(q.get("verdict", ""), ""), **{"from": q.get("source", ""), "q": q.get("q", "")})
+
+
+async def old_stats(request: web.Request) -> web.Response:
+    q = request.query
+    raise _moved("/", view="charts", days=q.get("days", ""), account=q.get("account", ""))
 
 
 async def application_page(request: web.Request) -> web.Response:
@@ -280,9 +403,12 @@ async def application_page(request: web.Request) -> web.Response:
         raise web.HTTPNotFound(text="нет такого отклика")
     chat = queries.chat_for_application(db.conn, app_id)
     return _render(request, "application.html", row=row, history=db.stage_history(app_id),
+                   back=_safe_next(request.query.get("back")) if request.query.get("back") else
+                   "/jobs?" + urlencode({"src": row["account"]}),
                    custom_stages=queries.custom_stages(db.conn), chat=chat,
                    messages=db.chat_messages(chat["id"]) if chat else [],
-                   interviews=queries.interviews_for_application(db.conn, app_id))
+                   interviews=queries.interviews_for_application(db.conn, app_id),
+                   country_name=feed_sources.country_name)
 
 
 async def chats_page(request: web.Request) -> web.Response:
@@ -401,102 +527,66 @@ async def stats_page(request: web.Request) -> web.Response:
     )
 
 
-# --- Telegram and settings (v6): the site writes settings, the bot and the workers read them ---
+# --- settings (v6, split into sections in v10): the site writes settings, the bot and the workers read them ---
 
 def _today_limit(site: Site, account) -> int | None:
     first = site.db.get(f"hh_start:{account.name}")
     return daily_limit(account, datetime.fromisoformat(first), datetime.now(ZoneInfo(site.tz))) if first else None
 
 
-async def telegram_page(request: web.Request) -> web.Response:
-    site: Site = request.app[SITE]
+def _account_card(site: Site, name: str, base) -> dict:
     db = site.db
-    verdict = request.query.get("verdict", "")
-    verdict = verdict if verdict in queries.VERDICTS else ""
-    source, q = request.query.get("source", ""), request.query.get("q", "").strip()
-    try:
-        page = max(int(request.query.get("page", "1")), 1)
-    except ValueError:
-        page = 1
-    posts, total = queries.tg_posts(db.conn, verdict, source, q, page)
-    pages = max((total + queries.TG_PAGE - 1) // queries.TG_PAGE, 1)
+    start_of_day = datetime.now(ZoneInfo(site.tz)).replace(hour=0, minute=0, second=0, microsecond=0)
+    account = hh_accounts.with_overrides(base, db)
+    return {"name": name, "base": base, "account": account, "changed": hh_accounts.overrides(db, name),
+            "paused": hh_accounts.paused(db, name), "limit": _today_limit(site, account),
+            "today": db.hh_applied_since(name, start_of_day.astimezone(timezone.utc))}
 
-    def page_url(n: int) -> str:
-        return "/telegram?" + urlencode({k: v for k, v in {"verdict": verdict, "source": source, "q": q,
-                                                            "page": n}.items() if v})
 
+def _telegram_context(site: Site) -> dict:
+    db = site.db
     f = db.filters()
-    no_source = urlencode({k: v for k, v in {"verdict": verdict, "q": q}.items() if v})
-    return _render(
-        request, "telegram.html", no_source_url="/telegram" + (f"?{no_source}" if no_source else ""),
-        posts=posts, total=total, page=page, pages=pages, page_url=page_url,
-        verdict=verdict, source=source, q=q, verdicts=queries.VERDICTS,
-        summary=queries.tg_summary(db.conn, site.tz), by_source=queries.tg_by_source(db.conn, site.tz),
+    return dict(
+        by_source=queries.tg_by_source(db.conn, site.tz),
         mode=db.get("mode"), digest_time=db.get("digest_time"), include=f.include, exclude=f.exclude,
-        folder=tg_sources.folder(site.tg_folder, db), folder_from_site=db.get(tg_sources.FOLDER) is not None,
-        env_folder=site.tg_folder, env_sources=site.tg_sources, extra=tg_sources.extra(db),
-        seen=tg_sources.seen(db), tg_paused=db.get(tg_sources.PAUSED) == "1", hold=_hold(site),
+        folder=tg_sources.folder(site.tg_folder, db), env_folder=site.tg_folder, env_sources=site.tg_sources,
+        extra=tg_sources.extra(db), seen=tg_sources.seen(db), tg_paused=db.get(tg_sources.PAUSED) == "1",
         digest_requested=db.get(tg_sources.DIGEST_REQUEST) == "1",
     )
 
 
-async def settings_page(request: web.Request) -> web.Response:
-    site: Site = request.app[SITE]
+def _feeds_context(site: Site) -> dict:
     db = site.db
-    start_of_day = datetime.now(ZoneInfo(site.tz)).replace(hour=0, minute=0, second=0, microsecond=0)
-    files = site.configured_accounts(file_only=True)
-    cards = []
-    for name, base in files.items():
-        account = hh_accounts.with_overrides(base, db)
-        cards.append({
-            "name": name, "base": base, "account": account, "changed": hh_accounts.overrides(db, name),
-            "paused": hh_accounts.paused(db, name), "limit": _today_limit(site, account),
-            "today": db.hh_applied_since(name, start_of_day.astimezone(timezone.utc)),
-        })
-    return _render(request, "settings.html", cards=cards, hold=_hold(site),
-                   strikes=int(db.get("hh_captcha_strikes", "0") or 0), file=str(site.accounts_path))
-
-
-# --- job-site feeds (v9): the worker reads them, the site shows the jobs and edits the feed list ---
-
-async def feeds_page(request: web.Request) -> web.Response:
-    site: Site = request.app[SITE]
-    db = site.db
-    show = request.query.get("show", "matched")
-    show = show if show in queries.FEED_SHOW else "matched"
-    verdict = request.query.get("verdict", "")
-    verdict = verdict if verdict in queries.VERDICTS else ""
-    country, source = request.query.get("country", "")[:3], request.query.get("source", "")[:32]
-    q = request.query.get("q", "").strip()[:100]
-    try:
-        page = max(int(request.query.get("page", "1")), 1)
-    except ValueError:
-        page = 1
-    jobs, total = queries.feed_jobs(db.conn, show=show, country=country, source=source, verdict=verdict, q=q,
-                                    page=page)
-    pages = max((total + queries.FEED_PAGE - 1) // queries.FEED_PAGE, 1)
-    params = {"show": show, "country": country, "source": source, "verdict": verdict, "q": q}
-
-    def page_url(n: int) -> str:
-        return "/feeds?" + urlencode({k: v for k, v in {**params, "page": n}.items() if v})
-
-    def without(key: str) -> str:
-        rest = urlencode({k: v for k, v in params.items() if v and k != key})
-        return "/feeds" + (f"?{rest}" if rest else "")
-
     counts = queries.feed_by_source(db.conn, site.tz)
     feeds = [{"source": s, "state": feed_sources.state(db, s.key), "counts": counts.get(s.key)}
              for s in feed_sources.all_sources(db)]
-    names = {f["source"].key: f["source"].name for f in feeds}
-    return _render(
-        request, "feeds.html", jobs=jobs, total=total, page=page, pages=pages, page_url=page_url,
-        without=without, show=show, shows=queries.FEED_SHOW, verdict=verdict, verdicts=queries.VERDICTS,
-        country=country, source=source, q=q, countries=queries.feed_countries(db.conn), names=names,
-        country_name=feed_sources.country_name, feeds=feeds, summary=queries.feed_summary(db.conn, site.tz),
+    return dict(
+        feeds=feeds, country_name=feed_sources.country_name,
         include=feed_sources.words(db, feed_sources.INCLUDE), exclude=feed_sources.words(db, feed_sources.EXCLUDE),
         feeds_paused=db.get(feed_sources.PAUSED) == "1", mode=db.get("mode"), digest_time=db.get("digest_time"),
-        extra_lines=feed_sources.extra_lines(db), hold=_hold(site), min_interval=feed_sources.MIN_INTERVAL,
+        extra_lines=feed_sources.extra_lines(db), min_interval=feed_sources.MIN_INTERVAL,
     )
+
+
+async def settings_page(request: web.Request) -> web.Response:
+    """/settings (general), /settings/captcha, /settings/hh/<account>, /settings/telegram, /settings/feeds."""
+    site: Site = request.app[SITE]
+    files = site.configured_accounts(file_only=True)
+    section = request.match_info.get("section", "general")
+    context: dict = {}
+    if section == "hh":
+        name = request.match_info["name"]
+        if name not in files:
+            raise web.HTTPNotFound(text="нет такого аккаунта в accounts.toml")
+        context["card"] = _account_card(site, name, files[name])
+    elif section == "captcha":
+        context["strikes"] = int(site.db.get("hh_captcha_strikes", "0") or 0)
+    elif section == "telegram":
+        context.update(_telegram_context(site))
+    elif section == "feeds":
+        context.update(_feeds_context(site))
+    return _render(request, "settings.html", section=section, account_names=list(files), hold=_hold(site),
+                   file=str(site.accounts_path), **context)
 
 
 # --- api for the inline edits ---
@@ -530,6 +620,39 @@ async def api_stage(request: web.Request) -> web.Response:
             raise web.HTTPBadRequest(text="stage is empty")
         db.set_stage(app_id, stage, str(body.get("comment", "")).strip()[:500])
     return web.json_response(_row_json(db.application(app_id)))
+
+
+async def api_applied(request: web.Request) -> web.Response:
+    """"Откликнулся" on a Telegram post or a feed item: from now on it is an application with stages."""
+    db: Database = request.app[SITE].db
+    await _json_body(request)
+    kind, item_id = request.match_info["kind"], int(request.match_info["id"])
+    if kind == "tg":
+        row = db.conn.execute("SELECT * FROM tg_posts WHERE id = ?", (item_id,)).fetchone()
+        if row is None:
+            raise web.HTTPNotFound()
+        title, _ = queries._title_of_post(row["text"])
+        app_id = db.add_manual_application("tg", queries.TG_TAB, str(item_id), title, row["source"], row["url"])
+        db.conn.execute("UPDATE tg_posts SET verdict = 1 WHERE id = ?", (item_id,))
+    else:
+        row = db.conn.execute("SELECT * FROM feed_jobs WHERE id = ?", (item_id,)).fetchone()
+        if row is None:
+            raise web.HTTPNotFound()
+        employer = row["company"] or {s.key: s.name for s in feed_sources.all_sources(db)}.get(row["source"], "")
+        app_id = db.add_manual_application("feed", (row["country"] or "").lower(), str(item_id), row["title"],
+                                           employer, row["url"])
+        db.feed_set_verdict(item_id, 1)
+    return web.json_response({"id": app_id})
+
+
+async def api_application_delete(request: web.Request) -> web.Response:
+    """Undo "Откликнулся"; applications from hh cannot be deleted."""
+    await _json_body(request)
+    try:
+        request.app[SITE].db.delete_manual_application(int(request.match_info["id"]))
+    except LookupError:
+        raise web.HTTPNotFound(text="удалить можно только отклик, отмеченный вручную")
+    return web.json_response({"ok": True})
 
 
 async def api_note(request: web.Request) -> web.Response:
@@ -840,18 +963,21 @@ def build_app(site: Site) -> web.Application:
         web.post("/login", login),
         web.post("/logout", logout),
         web.get("/", overview),
-        web.get("/stages", stages_page),
-        web.get("/account/{name}", account_page),
+        web.get("/jobs", jobs_page),
+        web.get("/stages", old_stages),
+        web.get("/account/{name}", old_account),
         web.get(r"/application/{id:\d+}", application_page),
         web.get("/chats", chats_page),
         web.get(r"/chats/{id:\d+}", chats_page),
         web.get("/calendar", calendar_page),
         web.get("/calendar/new", interview_page),
         web.get(r"/calendar/{id:\d+}", interview_page),
-        web.get("/stats", stats_page),
-        web.get("/telegram", telegram_page),
+        web.get("/stats", old_stats),
+        web.get("/telegram", old_telegram),
+        web.get("/feeds", old_feeds),
         web.get("/settings", settings_page),
-        web.get("/feeds", feeds_page),
+        web.get(r"/settings/{section:general|captcha|telegram|feeds}", settings_page),
+        web.get("/settings/{section:hh}/{name}", settings_page),
         web.post("/api/feeds", api_feeds),
         web.post(r"/api/feeds/{key:[a-z0-9][a-z0-9_-]{1,31}}/now", api_feed_now),
         web.post(r"/api/feeds/jobs/{id:\d+}/verdict", api_feed_verdict),
@@ -866,6 +992,8 @@ def build_app(site: Site) -> web.Application:
         web.post(r"/api/interviews/{id:\d+}/delete", api_interview_delete),
         web.post(r"/api/applications/{id:\d+}/stage", api_stage),
         web.post(r"/api/applications/{id:\d+}/note", api_note),
+        web.post(r"/api/applications/{id:\d+}/delete", api_application_delete),
+        web.post(r"/api/jobs/{kind:tg|feed}/{id:\d+}/applied", api_applied),
         web.post(r"/api/chats/{id:\d+}/reply", api_chat_reply),
         web.post(r"/api/outbox/{id:\d+}/{action:retry|delete}", api_outbox),
         web.get("/api/last-event", api_last_event),

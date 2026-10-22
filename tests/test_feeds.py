@@ -264,12 +264,17 @@ def test_feeds_page_and_settings(tmp_path):
 
     async def main():
         async with TestClient(TestServer(build_app(site))) as client:
-            assert (await client.get("/feeds", allow_redirects=False)).status == 302
+            assert (await client.get("/jobs?src=rs", allow_redirects=False)).status == 302
             await client.post("/login", data={"password": PASSWORD, "next": "/"}, allow_redirects=False)
-            text = await (await client.get("/feeds")).text()
-            assert "PHP dev 0" in text and "Designer" not in text and "HelloWorld.rs" in text
-            text = await (await client.get("/feeds?show=all&country=RS")).text()
-            assert "Designer &lt;b&gt;" in text
+            r = await client.get("/feeds", allow_redirects=False)
+            assert r.headers["Location"] == "/jobs?src=rs"
+            text = await (await client.get("/jobs?src=rs")).text()
+            assert "PHP dev 0" in text and "Designer" not in text and "HelloWorld.rs" in text and "Сербия<sup>1</sup>" in text
+            text = await (await client.get("/jobs?src=rs&st=skip")).text()
+            assert "Designer &lt;b&gt;" in text and "не подошла" in text
+            assert "PHP dev 0" in await (await client.get("/jobs?st=new")).text()
+            text = await (await client.get("/settings/feeds")).text()
+            assert "HelloWorld.rs" in text and 'name="interval:helloworld"' in text
 
             r = await client.post("/api/feeds", json={"include": "PHP, Go", "exclude": "", "paused": True,
                                                        "enabled:startit": False, "interval:helloworld": "45",

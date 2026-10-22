@@ -4,24 +4,21 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}JobPilot{% endblock %}</title>
+<link rel="preload" href="/static/fonts/playfair-display-normal-cyrillic.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/static/site.css">
 </head>
 <body data-last-event="{{ last_event }}">
 {% if accounts is defined and path != '/login' %}
+{% set nav_on = 'overview' if path == '/' else 'jobs' if path.startswith(('/jobs', '/application')) else 'chats' if path.startswith('/chats') else 'calendar' if path.startswith('/calendar') else 'settings' if path.startswith('/settings') else '' %}
 <header class="top">
-  <a class="brand" href="/">JobPilot</a>
+  <a class="brand" href="/">JP.</a>
   <nav>
-    <a href="/" {% if path == '/' %}class="on"{% endif %}>Общая</a>
-    {% for a in accounts %}
-    <a href="/account/{{ a }}" {% if path == '/account/' ~ a %}class="on"{% endif %}>{{ a }}</a>
-    {% endfor %}
-    <a href="/stages" {% if path == '/stages' %}class="on"{% endif %}>Этапы</a>
-    <a href="/chats" {% if path.startswith('/chats') %}class="on"{% endif %}>Чаты{% if unread %} <span class="badge">{{ unread }}</span>{% endif %}</a>
-    <a href="/calendar" {% if path.startswith('/calendar') %}class="on"{% endif %}>Календарь</a>
-    <a href="/stats" {% if path == '/stats' %}class="on"{% endif %}>Графики</a>
-    <a href="/telegram" {% if path == '/telegram' %}class="on"{% endif %}>Телеграм</a>
-    <a href="/feeds" {% if path == '/feeds' %}class="on"{% endif %}>Ленты</a>
-    <a href="/settings" {% if path == '/settings' %}class="on"{% endif %}>Настройки</a>
+    <a href="/" class="item{{ ' on' if nav_on == 'overview' }}"><b>Обзор</b><span class="cap">как идут дела</span></a>
+    <a href="/jobs" class="item{{ ' on' if nav_on == 'jobs' }}"><b>Вакансии</b><span class="cap">всё найденное</span></a>
+    <a href="/chats" class="item{{ ' on' if nav_on == 'chats' }}"><b>Чаты{% if unread %}<span class="badge">{{ unread }}</span>{% endif %}</b><span class="cap">переписка hh</span></a>
+    <a href="/calendar" class="item{{ ' on' if nav_on == 'calendar' }}"><b>Календарь</b><span class="cap">собеседования</span></a>
+    <span class="spacer"></span>
+    <a href="/settings" class="item{{ ' on' if nav_on == 'settings' }}"><b>Настройки</b><span class="cap">как бот ищет</span></a>
   </nav>
   <form method="post" action="/logout"><button class="link">Выйти</button></form>
 </header>

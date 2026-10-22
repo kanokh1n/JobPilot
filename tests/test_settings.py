@@ -63,9 +63,11 @@ def test_telegram_page_and_settings(tmp_path):
         db.add_post("h1", "Remote jobs", "https://t.me/remote/1", "Ищем PHP разработчика в команду " * 3)
         db.add_post("h2", "Go chat", "https://t.me/go/2", "Вакансия Go <script>" + "x" * 500)
         sources.save_seen(db, ["Remote jobs", "Go chat"], ["@gone"])
-        text = await (await client.get("/telegram")).text()
-        assert "Remote jobs" in text and "&lt;script&gt;" in text and "@gone" in text and "@from_env" in text
-        assert 'value="Вакансии"' in text
+        text = await (await client.get("/jobs?src=tg")).text()
+        assert "Remote jobs" in text and "&lt;script&gt;" in text and "Ищем PHP разработчика" in text
+        text = await (await client.get("/settings/telegram")).text()
+        assert "@gone" in text and "@from_env" in text and 'value="Вакансии"' in text
+        assert "Ищем PHP" in await (await client.get("/jobs?st=new")).text()
 
         r = await client.post("/api/telegram", json={"mode": "realtime", "digest_time": "08:30",
                                                        "include": "PHP, Go\ngolang", "exclude": "", "paused": True})
@@ -84,12 +86,12 @@ def test_telegram_page_and_settings(tmp_path):
         assert r.status == 400 and "t.me/+secret" in await r.text()
 
         assert (await client.post("/api/telegram/posts/1/verdict", json={"verdict": 1})).status == 200
-        liked = await (await client.get("/telegram?verdict=1")).text()
+        liked = await (await client.get("/jobs?src=tg&st=liked")).text()
         assert "Remote jobs" in liked and "Вакансия Go" not in liked
         assert (await client.post("/api/telegram/posts/1/verdict", json={"verdict": None})).status == 200
         assert db.conn.execute("SELECT verdict FROM tg_posts WHERE id = 1").fetchone()[0] is None
         assert (await client.post("/api/telegram/posts/99/verdict", json={"verdict": 0})).status == 404
-        by_source = await (await client.get("/telegram?source=Go+chat")).text()
+        by_source = await (await client.get("/jobs?src=tg&from=Go+chat")).text()
         assert "Вакансия Go" in by_source and "Ищем PHP" not in by_source
 
         assert (await client.post("/api/telegram/digest", json={})).status == 200
@@ -102,8 +104,10 @@ def test_telegram_page_and_settings(tmp_path):
 
 def test_settings_page_and_account_api(tmp_path):
     async def scenario(client, db, site):
-        text = await (await client.get("/settings")).text()
+        assert "/settings/hh/php" in await (await client.get("/settings")).text()
+        text = await (await client.get("/settings/hh/php")).text()
         assert "PHP backend\nLaravel" in text and "изменено на сайте" not in text
+        assert (await client.get("/settings/hh/nobody")).status == 404
 
         r = await client.post("/api/settings/account/php", json={
             "paused": True, "start_limit": "10", "max_limit": "30", "per_pass": "5",
@@ -116,7 +120,7 @@ def test_settings_page_and_account_api(tmp_path):
         assert account.exclude == ("junior", "стажёр") and account.exclude_employers == ("Acme", "Beta Group")
         assert hh_accounts.paused(db, "php")
         assert "include" not in json.loads(db.get("hh_account:php"))  # same as the file
-        text = await (await client.get("/settings")).text()
+        text = await (await client.get("/settings/hh/php")).text()
         assert "изменено на сайте" in text
         assert "На паузе отклики аккаунтов: php" in await (await client.get("/")).text()
 
@@ -137,7 +141,7 @@ def test_settings_page_and_account_api(tmp_path):
         assert (await client.post("/api/settings", json={"resume_lang": "de"})).status == 400
 
         record_captcha(db, datetime.now(timezone.utc))
-        assert "Снять паузу hh" in await (await client.get("/settings")).text()
+        assert "Снять паузу hh" in await (await client.get("/settings/captcha")).text()
         assert (await client.post("/api/hh/captcha/clear", json={})).status == 200
         assert captcha_hold(db, datetime.now(timezone.utc) + timedelta(minutes=1)) is None
 

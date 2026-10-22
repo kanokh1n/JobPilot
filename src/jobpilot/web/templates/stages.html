@@ -1,7 +1,0 @@
-{% extends "base.html" %}
-{% block title %}Этапы · JobPilot{% endblock %}
-{% block body %}
-<h1>Этапы</h1>
-<p class="muted small">Этап меняется в таблице сразу. Поставленный руками (✎) система больше не трогает, пока не выберете «вернуть автомат».</p>
-{% with show_account = True %}{% include "_table.html" %}{% endwith %}
-{% endblock %}

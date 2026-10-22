@@ -4,7 +4,7 @@
 
 {% macro hold_banner(hold) -%}
 {% if hold.paused %}<div class="banner warn">Всё на паузе: отклики hh и Телеграм. Снять: <a href="/settings">Настройки</a> или /unpause в боте.</div>{% endif %}
-{% if hold.captcha_until %}<div class="banner bad">hh показал капчу: отклики стоят до {{ hold.captcha_until | local }}. Снять раньше: <a href="/settings">Настройки</a> или /hh_resume в боте.</div>{% endif %}
+{% if hold.captcha_until %}<div class="banner bad">hh показал капчу: отклики стоят до {{ hold.captcha_until | local }}. Снять раньше: <a href="/settings/captcha">Настройки</a> или /hh_resume в боте.</div>{% endif %}
 {% if hold.accounts_paused and not hold.paused %}<div class="banner warn">На паузе отклики аккаунтов: {{ hold.accounts_paused | join(', ') }} (<a href="/settings">Настройки</a>).</div>{% endif %}
 {%- endmacro %}
 
@@ -51,11 +51,11 @@
 {%- endmacro %}
 
 {% macro stage_select(app, custom_stages) -%}
-<select class="stage s-{{ app.stage }}" data-current="{{ app.stage }}">
+<select class="stage s-{{ app.stage }}" data-current="{{ app.stage }}"{% if app.source != 'hh' %} data-by-hand{% endif %}>
   {% for st in STAGE_ORDER %}<option value="{{ st }}" {% if app.stage == st %}selected{% endif %}>{{ LABELS[st] }}{% if app.stage == st and app.stage_manual %} ✎{% endif %}</option>{% endfor %}
   {% for st in custom_stages %}<option value="{{ st }}" {% if app.stage == st %}selected{% endif %}>{{ st }}{% if app.stage == st and app.stage_manual %} ✎{% endif %}</option>{% endfor %}
   <option value="__custom__">свой этап…</option>
-  {% if app.stage_manual %}<option value="__auto__">↺ вернуть автомат</option>{% endif %}
+  {% if app.stage_manual and app.source == 'hh' %}<option value="__auto__">↺ вернуть автомат</option>{% endif %}
 </select>
 {%- endmacro %}
 
@@ -94,4 +94,13 @@
     {%- if i.note %}<div class="muted small">{{ i.note }}</div>{% endif -%}
   </span>
 </li>
+{%- endmacro %}
+
+{% macro overview_head(title, view) -%}
+<div class="ov-head">
+  <h1 class="page-h">{{ title }}</h1>
+  <nav class="switch" aria-label="Вид">
+    <a href="/" {% if view == 'summary' %}class="on" aria-current="page"{% endif %}>Сводка</a><span class="sep">/</span><a href="/?view=charts" {% if view == 'charts' %}class="on" aria-current="page"{% endif %}>Графики</a>
+  </nav>
+</div>
 {%- endmacro %}

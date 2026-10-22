@@ -159,13 +159,25 @@ Everything lives in the `settings` table, so no restart is needed: the bot check
 digest request every 30 s, the userbot re-reads the sources every 5 minutes, and an hh pass loads the
 account's settings when it starts (the `hh-*` commands use them too). The bot commands keep working.
 
+## Site layout (v10)
+
+Five sections: **Обзор** (the day in numbers, "требует внимания", funnels; "Графики" is its second view,
+`/?view=charts`), **Вакансии** (`/jobs`: hh applications, Telegram posts and feed items in one list, a tab per
+hh account, Telegram and feed country, shared status filters Новые / Интересные / Отклик / В процессе / Оффер /
+Отказ / Мимо), **Чаты**, **Календарь** and **Настройки** (Общее, a section per hh account, Капча, Телеграм,
+Ленты). «Откликнулся» on a Telegram post or a feed item makes it an application (`applications.source` =
+`tg` or `feed`, account = `tg` or the feed country) with stages, a note and interviews like an hh one; only you move
+its stage, and "убрать отклик" on its page undoes it. No schema change. The old addresses (`/stages`, `/account/<name>`, `/telegram`, `/feeds`, `/stats`) redirect. Fonts
+(Playfair Display, Manrope; SIL Open Font License) are served from `web/static/fonts`, nothing is loaded from
+other sites.
+
 ## Job-site feeds (v9): Serbia
 
 The worker reads the RSS feeds of job sites and keeps the vacancies in the table `feed_jobs` (database v5).
 Read-only: nothing is posted to the sites, you apply there by hand. Built in for Serbia: HelloWorld.rs
 (every 30 min) and Startit Poslovi (every 6 h). Poslovi Infostud is in the list but off: its feed has no
 categories, only the 20 newest of all its ~12 000 jobs (IT ones of the group are on HelloWorld). Each feed has a country, so other
-countries are added the same way: on the "Ленты" page as `DE | Name | https://feed-url | minutes`.
+countries are added the same way: in Настройки → Ленты as `DE | Name | https://feed-url | minutes`.
 
 Politeness: one feed at a time with a few seconds between them, never more often than every 15 minutes
 or than the feed's own `<ttl>`, `If-None-Match`/`If-Modified-Since`, `Retry-After` on 429/503, a pause that
@@ -173,9 +185,9 @@ doubles after each error (up to a day), at most 2 MB per answer. The next read t
 does not read the sites again. `FEEDS_USER_AGENT` in `.env` changes the User-Agent.
 
 A vacancy matches when its title or categories contain one of the feed words and none of the excluded
-ones (own words, on the "Ленты" page; in descriptions "go" is mostly the verb). Matching ones go to
-Telegram by the mode from the Telegram page: at once (more than 5 from one read as one list) or in the
-daily digest, after the Telegram posts. Others are kept and shown on the site under "все из лент".
+ones (own words, in Настройки → Ленты; in descriptions "go" is mostly the verb). Matching ones go to
+Telegram by the mode from Настройки → Телеграм: at once (more than 5 from one read as one list) or in the
+daily digest, after the Telegram posts. Others are kept and shown in Вакансии under "Мимо".
 👍/👎 work in the bot and on the site. After 3 failed reads in a row the bot says so once.
 
 `jobpilot feeds-check [feed]` reads the feeds once and prints what they hold, writing nothing

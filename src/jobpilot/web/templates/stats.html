@@ -1,9 +1,10 @@
 {% extends "base.html" %}
-{% from "_macros.html" import chart %}
+{% from "_macros.html" import chart, overview_head %}
 {% block title %}Графики · JobPilot{% endblock %}
 {% block body %}
-<h1>Графики</h1>
-<form class="filters" method="get">
+{{ overview_head('Графики', 'charts') }}
+<form class="filters" method="get" action="/">
+  <input type="hidden" name="view" value="charts">
   <select name="days" onchange="this.form.submit()">
     {% for d in (7, 30, 90) %}<option value="{{ d }}" {% if days == d %}selected{% endif %}>{{ d }} дней</option>{% endfor %}
   </select>
@@ -43,7 +44,7 @@
       <thead><tr><th>Аккаунт</th>{% for key, name, _ in levels %}<th>{{ name }}</th>{% endfor %}<th>отказ</th><th>загостили</th></tr></thead>
       <tbody>
       {% for a, row in funnel.accounts.items() %}
-      <tr><td><a href="/account/{{ a }}">{{ a }}</a></td>
+      <tr><td><a href="/jobs?src={{ a }}">{{ a }}</a></td>
         {% for key, _, _ in levels %}<td>{{ row[key] }}{% if not loop.first and row.sent %} <span class="muted small">{{ (100 * row[key] / row.sent) | round | int }}%</span>{% endif %}</td>{% endfor %}
         <td>{{ row.rejected }}</td><td>{{ row.ghosted }}</td></tr>
       {% else %}
