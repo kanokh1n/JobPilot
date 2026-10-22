@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from enum import Enum
 from pathlib import Path
 
@@ -28,6 +29,19 @@ class ApplyResult(str, Enum):
 
 class CaptchaError(Exception):
     """hh showed a captcha instead of the page: stop touching hh with this session."""
+
+
+def prune_screenshots(directory: Path, max_age_hours: float = 24) -> int:
+    """Delete screenshots and saved pages older than `max_age_hours`; the server disk is small."""
+    if not directory.exists():
+        return 0
+    cutoff = time.time() - max_age_hours * 3600
+    removed = 0
+    for path in directory.iterdir():
+        if path.is_file() and path.stat().st_mtime < cutoff:
+            path.unlink()
+            removed += 1
+    return removed
 
 
 class HHBrowser:
@@ -112,7 +126,7 @@ class HHBrowser:
             except PlaywrightTimeout:
                 if await self.has_captcha(page, vacancy.id):
                     return ApplyResult.CAPTCHA
-                if "test" in page.url:
+                if "test" in page.url or await page.get_by_text(sel.EMPLOYER_QUESTIONS).count():
                     return ApplyResult.NEEDS_TEST
                 # No letter window: do not guess that the response went out, check the vacancy page.
                 await page.screenshot(path=str(self._screenshots_dir / f"{vacancy.id}_noletter.png"))

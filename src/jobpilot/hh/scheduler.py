@@ -11,7 +11,7 @@ from ..config import Config
 from ..db import Database
 from ..tg.notifier import Notifier
 from .accounts import load_accounts, paused, with_overrides
-from .apply import CaptchaError, HHBrowser
+from .apply import CaptchaError, HHBrowser, prune_screenshots
 from .chats import sync_chats
 from .followup import refresh_resumes, remind_pass
 from .pipeline import apply_pass, captcha_hold, record_captcha
@@ -43,6 +43,11 @@ def schedule_hh(scheduler: AsyncIOScheduler, cfg: Config, db: Database, notifier
     if not cfg.accounts_path.exists():
         log.info("no %s, hh part is off", cfg.accounts_path)
         return
+    def prune_job() -> None:
+        removed = prune_screenshots(cfg.data_dir / "screenshots")
+        log.info("hh screenshots removed: %d", removed)
+
+    scheduler.add_job(prune_job, "cron", hour=4, minute=0, id="hh-prune-screenshots", replace_existing=True)
     for number, account in enumerate(load_accounts(cfg.accounts_path).values()):
         profile = cfg.data_dir / "browser" / account.name
         shots = cfg.data_dir / "screenshots"

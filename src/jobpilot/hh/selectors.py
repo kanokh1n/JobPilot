@@ -13,6 +13,7 @@ SUBMIT_BUTTON = '[data-qa="vacancy-response-submit-popup"]'
 POPUP_CLOSE = '[data-qa="response-popup-close"]'
 ANOTHER_COUNTRY_CONFIRM = "Все равно откликнуться"  # button text of the other-country warning
 ADD_LETTER = "Добавить сопроводительное"  # button text that opens the hidden letter field
+EMPLOYER_QUESTIONS = "ответить на несколько вопросов"  # response page that asks the employer's questions first
 RESUME_OPTION = '[data-qa="resume-title"]'  # the selected resume of the response popup
 LOGGED_IN_MARKER = '[data-qa="mainmenu_profileAndResumes"]'
 CAPTCHA = 'iframe[src*="captcha"], [data-qa="account-captcha-picture"]'

@@ -1,4 +1,5 @@
 import asyncio
+import os
 import random
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -6,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 from jobpilot.db import Database
 from jobpilot.hh.accounts import load_accounts
-from jobpilot.hh.apply import ApplyResult
+from jobpilot.hh.apply import ApplyResult, prune_screenshots
 from jobpilot.hh.apply import CaptchaError
 from jobpilot.hh.limits import can_apply, captcha_cooldown_hours, daily_limit, pause_seconds
 from jobpilot.hh.models import Account, Vacancy
@@ -233,3 +234,14 @@ def test_blocked_employer_is_skipped_whatever_the_vacancy():
     assert matches(account, vacancy("evrone.ru")) is False
     assert matches(account, vacancy("VK Play")) is False
     assert matches(account, vacancy("Vkusno Tech")) is True
+
+
+def test_prune_screenshots_keeps_only_the_last_day(tmp_path):
+    old, fresh = tmp_path / "1_noletter.png", tmp_path / "captcha_2.html"
+    old.write_text("x")
+    fresh.write_text("x")
+    day_ago = old.stat().st_mtime - 25 * 3600
+    os.utime(old, (day_ago, day_ago))
+    assert prune_screenshots(tmp_path) == 1
+    assert not old.exists() and fresh.exists()
+    assert prune_screenshots(tmp_path / "missing") == 0
