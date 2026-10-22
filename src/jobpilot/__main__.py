@@ -91,6 +91,7 @@ def main() -> None:
         if dry:
             print("--dry-run: nothing written")
     elif command == "feeds-check":
+        from .core.db import Database
         from .feeds.scheduler import check
 
         cfg = Config.from_env(need_telegram=False)

@@ -299,3 +299,19 @@ def test_v4_database_gets_the_feed_table(tmp_path):
     assert db.conn.execute("PRAGMA user_version").fetchone()[0] == VERSION == 5
     assert db.conn.execute("SELECT COUNT(*) FROM feed_jobs").fetchone()[0] == 0
     assert (tmp_path / "old.db.v4.bak").exists()
+
+
+def test_feeds_check_command_starts(tmp_path, monkeypatch):
+    import jobpilot.__main__ as cli
+    import jobpilot.feeds.scheduler as feeds_scheduler
+
+    called = {}
+
+    async def fake_check(cfg, db, key):
+        called["key"] = key
+
+    monkeypatch.setattr(feeds_scheduler, "check", fake_check)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setattr("sys.argv", ["jobpilot", "feeds-check", "startit"])
+    cli.main()
+    assert called == {"key": "startit"}
