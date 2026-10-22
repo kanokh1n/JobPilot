@@ -67,7 +67,7 @@ def main() -> None:
         from .core.info import main as db_info
 
         db_info()
-    elif command in ("hh-login", "hh-search", "hh-run", "hh-dump", "hh-remind", "hh-export", "hh-refresh", "hh-explain"):
+    elif command in ("hh-login", "hh-search", "hh-run", "hh-dump", "hh-remind", "hh-export", "hh-refresh", "hh-explain", "hh-chats-dump", "hh-chats"):
         from .hh import cli
 
         if len(sys.argv) < 3:
@@ -79,6 +79,11 @@ def main() -> None:
             if len(sys.argv) < 4:
                 raise SystemExit("Usage: jobpilot hh-dump <account> <vacancy-url>")
             cli.dump(account, sys.argv[3])
+        elif command == "hh-chats":
+            pages = int(sys.argv[sys.argv.index("--pages") + 1]) if "--pages" in sys.argv else 3
+            cli.chats(account, pages)
+        elif command == "hh-chats-dump":
+            cli.chats_dump(account)
         elif command == "hh-explain":
             cli.explain(account)
         elif command == "hh-refresh":
@@ -93,7 +98,7 @@ def main() -> None:
         else:
             cli.run(account, live="--live" in sys.argv[3:], any_time="--any-time" in sys.argv[3:])
     else:
-        raise SystemExit("Usage: jobpilot [run|login|web|db-info|hh-login|hh-search|hh-run|hh-remind|hh-export|hh-refresh|hh-explain|hh-dump] [account]")
+        raise SystemExit("Usage: jobpilot [run|login|web|db-info|hh-login|hh-search|hh-run|hh-remind|hh-export|hh-refresh|hh-explain|hh-dump|hh-chats|hh-chats-dump] [account]")
 
 
 if __name__ == "__main__":

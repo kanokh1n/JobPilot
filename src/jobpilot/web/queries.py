@@ -128,3 +128,32 @@ def custom_stages(conn: sqlite3.Connection) -> list[str]:
 
 def last_event_id(conn: sqlite3.Connection) -> int:
     return conn.execute("SELECT COALESCE(MAX(id), 0) FROM events").fetchone()[0]
+
+
+def chats(conn: sqlite3.Connection, account: str = "", q: str = "", limit: int = 300) -> list[sqlite3.Row]:
+    """Chat list, newest first, with the stage of the linked application."""
+    clauses, args = [], []
+    if account:
+        clauses.append("c.account = ?")
+        args.append(account)
+    if q:
+        clauses.append("(c.title LIKE ? OR c.employer LIKE ? OR c.last_text LIKE ?"
+                       " OR c.id IN (SELECT chat_id FROM messages WHERE text LIKE ?))")
+        args += [f"%{q}%"] * 4
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    return conn.execute(
+        "SELECT c.*, a.name AS app_name, a.employer AS app_employer, a.stage, a.stage_manual"
+        " FROM chats c LEFT JOIN applications a ON a.id = c.application_id"
+        f" {where} ORDER BY c.last_message_at IS NULL, c.last_message_at DESC, c.id DESC LIMIT ?",
+        [*args, limit],
+    ).fetchall()
+
+
+def unread_total(conn: sqlite3.Connection) -> int:
+    return conn.execute("SELECT COALESCE(SUM(unread), 0) FROM chats").fetchone()[0]
+
+
+def chat_for_application(conn: sqlite3.Connection, app_id: int) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM chats WHERE application_id = ? ORDER BY last_message_at DESC LIMIT 1", (app_id,)
+    ).fetchone()

@@ -260,6 +260,68 @@ class Database:
         )
         self.event("reminder", account, self._hh_id(account, vacancy_id))
 
+    # --- employer chats (read from hh; the site only shows them) ---
+
+    def chat_last_message_at(self, account: str, external_id: str, source: str = "hh") -> str | None:
+        """When the stored copy of a chat last changed, so a reader can skip chats that did not."""
+        row = self._conn.execute(
+            "SELECT last_message_at FROM chats WHERE source = ? AND account = ? AND external_id = ?",
+            (source, account, external_id),
+        ).fetchone()
+        return row["last_message_at"] if row else None
+
+    def chat_upsert(self, account: str, external_id: str, *, vacancy_id: str | None = None, title: str = "",
+                    employer: str = "", last_message_at: str | None = None, unread: int = 0,
+                    last_text: str = "", source: str = "hh") -> int:
+        """Store what the chat list says about a chat; links it to our application for the same vacancy."""
+        app_id = self._hh_id(account, vacancy_id) if vacancy_id and source == "hh" else None
+        self._conn.execute(
+            "INSERT INTO chats (source, account, external_id, application_id, vacancy_id, title, employer,"
+            " last_message_at, unread, last_text, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT (source, account, external_id) DO UPDATE SET"
+            " application_id = COALESCE(excluded.application_id, chats.application_id),"
+            " vacancy_id = COALESCE(excluded.vacancy_id, chats.vacancy_id),"
+            " title = CASE WHEN excluded.title != '' THEN excluded.title ELSE chats.title END,"
+            " employer = CASE WHEN excluded.employer != '' THEN excluded.employer ELSE chats.employer END,"
+            " last_message_at = COALESCE(excluded.last_message_at, chats.last_message_at),"
+            " unread = excluded.unread,"
+            " last_text = CASE WHEN excluded.last_text != '' THEN excluded.last_text ELSE chats.last_text END,"
+            " synced_at = excluded.synced_at",
+            (source, account, external_id, app_id, vacancy_id, title, employer, last_message_at, unread,
+             last_text, _now()),
+        )
+        return self._conn.execute(
+            "SELECT id FROM chats WHERE source = ? AND account = ? AND external_id = ?",
+            (source, account, external_id),
+        ).fetchone()["id"]
+
+    def chat_add_messages(self, chat_id: int, messages) -> tuple[int, int]:
+        """Add messages not stored yet; each is (external_id, direction, author, text, sent_at).
+
+        Returns (new, new from the employer); new ones also land in events for the site.
+        """
+        new_in = new = 0
+        for external_id, direction, author, text, sent_at in messages:
+            cur = self._conn.execute(
+                "INSERT OR IGNORE INTO messages (chat_id, external_id, direction, author, text, sent_at)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (chat_id, str(external_id), direction, author, text, sent_at),
+            )
+            new += cur.rowcount
+            new_in += cur.rowcount if direction == "in" else 0
+        if new:
+            row = self._conn.execute("SELECT account FROM chats WHERE id = ?", (chat_id,)).fetchone()
+            self.event("chat", row["account"], chat_id, new=new, incoming=new_in)
+        return new, new_in
+
+    def chat(self, chat_id: int) -> sqlite3.Row | None:
+        return self._conn.execute("SELECT * FROM chats WHERE id = ?", (chat_id,)).fetchone()
+
+    def chat_messages(self, chat_id: int) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM messages WHERE chat_id = ? ORDER BY sent_at, id", (chat_id,)
+        ).fetchall()
+
     def first_seen(self, key: str, now: datetime | None = None) -> datetime:
         """Timestamp stored under `key` the first time it is asked for (used for the limit ramp-up)."""
         stored = self.get(key)

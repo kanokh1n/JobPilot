@@ -117,3 +117,24 @@ def test_summary_counts(tmp_path):
     assert s["total"] == 2 and s["today"] == 1 and s["week"] == 2 and s["skipped"] == 1
     assert s["by_stage"][stages.REJECTED] == 1 and s["answered"] == 1 and s["answer_rate"] == 50
     assert sum(d["n"] for d in queries.daily(db.conn, "Asia/Yerevan")) == 2
+
+
+def test_chats_pages(tmp_path):
+    async def scenario(client, db):
+        chat = db.chat_upsert("php", "900", vacancy_id="1", title="PHP dev", employer="Acme",
+                              last_message_at="2026-10-22T07:00:00+00:00", unread=2, last_text="Приглашаем <b>")
+        db.chat_add_messages(chat, [("1", "out", "Я", "Здравствуйте", "2026-10-22T06:00:00+00:00"),
+                                    ("2", "in", "HR", "Приглашаем <b>", "2026-10-22T07:00:00+00:00")])
+        db.chat_upsert("go", "901", vacancy_id="777", title="Чужой отклик", employer="X")
+        await _login(client)
+        listing = await (await client.get("/chats")).text()
+        assert "PHP dev" in listing and "Чужой отклик" in listing and 'class="badge">2<' in listing
+        opened = await (await client.get(f"/chats/{chat}")).text()
+        assert "Приглашаем &lt;b&gt;" in opened and "/application/1" in opened and 'data-id="1"' in opened
+        assert "Здравствуйте" in await (await client.get(f"/chats/{chat}?account=go")).text()
+        assert "PHP dev" not in await (await client.get("/chats?account=go")).text()
+        assert "Чужой" not in await (await client.get("/chats?q=Приглашаем")).text()
+        assert (await client.get("/chats/999")).status == 404
+        assert "Приглашаем" in await (await client.get("/application/1")).text()
+
+    _run(tmp_path, scenario)

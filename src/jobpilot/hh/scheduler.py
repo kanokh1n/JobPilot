@@ -11,9 +11,10 @@ from ..config import Config
 from ..db import Database
 from ..tg.notifier import Notifier
 from .accounts import load_accounts
-from .apply import HHBrowser
+from .apply import CaptchaError, HHBrowser
+from .chats import sync_chats
 from .followup import refresh_resumes, remind_pass
-from .pipeline import apply_pass, captcha_hold
+from .pipeline import apply_pass, captcha_hold, record_captcha
 from .search import WebSearch
 
 log = logging.getLogger(__name__)
@@ -95,11 +96,34 @@ def schedule_hh(scheduler: AsyncIOScheduler, cfg: Config, db: Database, notifier
                 except Exception:
                     log.exception("hh resume refresh failed for %s", account.name)
 
+        async def chats_job(account=account, profile=profile, shots=shots) -> None:
+            if _on_hold(db, cfg, f"chats/{account.name}"):
+                return
+            async with _browser_lock:
+                try:
+                    async with HHBrowser(profile, shots) as browser:
+                        summary = await sync_chats(db, browser, account.name)
+                except CaptchaError:
+                    strikes, until = record_captcha(db, datetime.now(ZoneInfo(cfg.tz)))
+                    await notifier.say(f"hh/{account.name}: капча на странице чатов, hh на паузе до {until:%d.%m %H:%M}")
+                    return
+                except Exception:
+                    log.exception("hh chats pass failed for %s", account.name)
+                    return
+            log.info("hh/%s chats: %d listed, %d updated, %d new messages", account.name, summary.chats,
+                     summary.updated, summary.new_messages)
+            if summary.incoming:
+                await notifier.say(f"hh/{account.name}: новые сообщения от работодателей:\n"
+                                   + "\n".join(f"• {name}" for name in summary.incoming))
+
         # Passes only run inside working hours; the per-day limit is enforced inside apply_pass.
         scheduler.add_job(apply_job, "cron", hour="9-20", minute=5 + 30 * number,
                           id=f"hh-apply-{account.name}", replace_existing=True)
         scheduler.add_job(remind_job, "cron", hour=13, minute=10 + 20 * number,
                           id=f"hh-remind-{account.name}", replace_existing=True)
+        # Chats are only read, so they are checked every hour of the day, between the apply passes.
+        scheduler.add_job(chats_job, "cron", hour="8-23", minute=20 + 30 * number,
+                          id=f"hh-chats-{account.name}", replace_existing=True)
         # hh lets a resume be raised once per 4 hours.
         scheduler.add_job(refresh_job, "cron", hour="9,13,17,21", minute=50 + 5 * number,
                           id=f"hh-refresh-{account.name}", replace_existing=True)

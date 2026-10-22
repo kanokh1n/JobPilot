@@ -9,7 +9,7 @@ from ..config import Config
 from ..db import Database
 from .accounts import load_accounts
 from .apply import HHBrowser, login_interactive
-from .dump import dump_pages
+from .dump import dump_chats, dump_pages
 from .followup import refresh_resumes, remind_pass
 from .pipeline import apply_pass, reject_reason
 from .search import WebSearch
@@ -35,6 +35,28 @@ def login(name: str) -> None:
 def dump(name: str, vacancy_url: str) -> None:
     cfg, account = _setup(name)
     asyncio.run(dump_pages(profile_dir(cfg, account.name), cfg.data_dir / "dumps" / account.name, vacancy_url))
+
+
+def chats_dump(name: str) -> None:
+    cfg, account = _setup(name)
+    asyncio.run(dump_chats(profile_dir(cfg, account.name), cfg.data_dir / "dumps" / account.name / "chats"))
+
+
+def chats(name: str, pages: int = 3) -> None:
+    """Copy the account's hh chats into the database once and say what changed."""
+    from .chats import sync_chats
+
+    cfg, account = _setup(name)
+    db = Database(cfg.db_path)
+
+    async def go() -> None:
+        async with HHBrowser(profile_dir(cfg, name), cfg.data_dir / "screenshots") as browser:
+            s = await sync_chats(db, browser, name, max_pages=pages)
+        print(f"chats listed={s.chats} updated={s.updated} new messages={s.new_messages} stages moved={s.stages_moved}")
+        for title in s.incoming:
+            print("  new from employer:", title)
+
+    asyncio.run(go())
 
 
 def search_only(name: str) -> None:

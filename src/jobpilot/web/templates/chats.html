@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% from "_macros.html" import pill, thread, stage_select %}
+{% block title %}{{ (chat.title ~ ' · ') if chat else '' }}Чаты · JobPilot{% endblock %}
+{% block body %}
+<div class="chats {{ 'has-open' if chat else '' }}">
+  <aside class="chat-list">
+    <form class="filters" method="get" action="/chats">
+      <select name="account" onchange="this.form.submit()">
+        <option value="">все аккаунты</option>
+        {% for a in accounts %}<option value="{{ a }}" {% if account == a %}selected{% endif %}>{{ a }}</option>{% endfor %}
+      </select>
+      <input type="search" name="q" value="{{ q }}" placeholder="вакансия, компания, текст">
+    </form>
+    <ul>
+      {% for c in chats %}
+      <li {% if chat and chat.id == c.id %}class="on"{% endif %}>
+        <a href="/chats/{{ c.id }}{{ qs }}">
+          <span class="row1"><b>{{ c.title or c.app_name or 'без названия' }}</b>
+            <span class="muted small nowrap">{{ c.last_message_at | local }}</span></span>
+          <span class="row2 muted small">{{ c.employer or c.app_employer }} · {{ c.account }}
+            {% if c.stage %}{{ pill(c.stage, c.stage_manual) }}{% endif %}
+            {% if c.unread %}<span class="badge">{{ c.unread }}</span>{% endif %}</span>
+          <span class="row3 muted small">{{ c.last_text | truncate(90) }}</span>
+        </a>
+      </li>
+      {% else %}
+      <li class="muted empty">Чатов пока нет. Воркер забирает их с hh раз в час.</li>
+      {% endfor %}
+    </ul>
+  </aside>
+  <section class="chat-open">
+    {% if chat %}
+    <header class="chat-head">
+      <a class="back" href="/chats{{ qs }}">← чаты</a>
+      <h1>{{ chat.title or (app.name if app else 'чат') }}</h1>
+      <p class="muted">{{ chat.employer or (app.employer if app else '') }} · аккаунт {{ chat.account }}
+        {% if chat.vacancy_id %} · <a href="https://hh.ru/vacancy/{{ chat.vacancy_id }}" target="_blank" rel="noopener">вакансия ↗</a>{% endif %}
+        · <a href="https://hh.ru/chat/{{ chat.external_id }}" target="_blank" rel="noopener">чат на hh ↗</a></p>
+      {% if app %}
+      <div class="chat-app" data-id="{{ app.id }}">
+        {% if app.stage is not none %}{{ stage_select(app, custom_stages) }}{% endif %}
+        <a href="/application/{{ app.id }}">карточка отклика</a>
+        <span class="muted small">отклик {{ app.applied_at | local('%d.%m.%Y') }}</span>
+      </div>
+      {% else %}
+      <p class="muted small">Отклика в базе нет: его отправили не через JobPilot.</p>
+      {% endif %}
+    </header>
+    {{ thread(messages) }}
+    <p class="muted small readonly">Ответить можно пока только на hh. Отправка с сайта будет в v8.</p>
+    {% else %}
+    <p class="muted pick">Выберите чат слева.</p>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

@@ -143,6 +143,19 @@ ALTER TABLE posts RENAME TO tg_posts;
 """
 
 
+# v3: what the chat reader needs to show a chat without an application of ours (a response sent by hand,
+# an invitation from the employer) and to skip chats that did not change.
+V3 = """
+ALTER TABLE chats ADD COLUMN vacancy_id TEXT;
+ALTER TABLE chats ADD COLUMN employer TEXT NOT NULL DEFAULT '';
+ALTER TABLE chats ADD COLUMN last_text TEXT NOT NULL DEFAULT '';
+ALTER TABLE chats ADD COLUMN synced_at TEXT;
+CREATE INDEX chats_last ON chats (last_message_at);
+CREATE INDEX chats_application ON chats (application_id);
+CREATE INDEX messages_order ON messages (chat_id, sent_at);
+"""
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -184,14 +197,18 @@ def _v2(conn: sqlite3.Connection) -> None:
     log.info("database v2: moved %d hh applications", len(old))
 
 
+def _v3(conn: sqlite3.Connection) -> None:
+    _run(conn, V3)
+
+
 # Index + 1 is the version a step brings the file to.
-STEPS: list[Callable[[sqlite3.Connection], None]] = [_v1, _v2]
+STEPS: list[Callable[[sqlite3.Connection], None]] = [_v1, _v2, _v3]
 VERSION = len(STEPS)
 
 
 def _has_data(conn: sqlite3.Connection) -> bool:
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-    return bool(tables & {"posts", "hh_applications"})
+    return bool(tables & {"posts", "hh_applications", "tg_posts", "applications"})
 
 
 def migrate(conn: sqlite3.Connection, path: Path | None = None) -> int:

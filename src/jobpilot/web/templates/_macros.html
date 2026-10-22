@@ -32,3 +32,28 @@
   {% endfor %}
 </div>
 {%- endmacro %}
+
+{% macro thread(messages) -%}
+<div class="thread">
+  {% for m in messages %}
+  {% if loop.first or (m.sent_at | local('%d.%m.%Y')) != (loop.previtem.sent_at | local('%d.%m.%Y')) %}
+  <div class="day">{{ m.sent_at | local('%d.%m.%Y') }}</div>
+  {% endif %}
+  <div class="msg {{ m.direction }}">
+    <div class="who">{{ m.author or ('вы' if m.direction == 'out' else 'работодатель') }} · {{ m.sent_at | local('%H:%M') }}</div>
+    <div class="text">{{ m.text }}</div>
+  </div>
+  {% else %}
+  <p class="muted">Сообщений пока нет: воркер ещё не забрал этот чат.</p>
+  {% endfor %}
+</div>
+{%- endmacro %}
+
+{% macro stage_select(app, custom_stages) -%}
+<select class="stage s-{{ app.stage }}" data-current="{{ app.stage }}">
+  {% for st in STAGE_ORDER %}<option value="{{ st }}" {% if app.stage == st %}selected{% endif %}>{{ LABELS[st] }}{% if app.stage == st and app.stage_manual %} ✎{% endif %}</option>{% endfor %}
+  {% for st in custom_stages %}<option value="{{ st }}" {% if app.stage == st %}selected{% endif %}>{{ st }}{% if app.stage == st and app.stage_manual %} ✎{% endif %}</option>{% endfor %}
+  <option value="__custom__">свой этап…</option>
+  {% if app.stage_manual %}<option value="__auto__">↺ вернуть автомат</option>{% endif %}
+</select>
+{%- endmacro %}

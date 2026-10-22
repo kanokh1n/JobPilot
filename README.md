@@ -66,6 +66,8 @@ jobpilot hh-search php       # prints what the queries find, nothing else
 jobpilot hh-dump php <vacancy-url>   # saves the vacancy, response window and negotiations pages to data/dumps (sends nothing)
 jobpilot hh-run php          # dry run: prints which vacancies it would respond to
 jobpilot hh-run php --live   # really applies
+jobpilot hh-chats php        # copies the employer chats into the database once (read-only)
+jobpilot hh-chats-dump php   # saves what the hh chat app loads to data/dumps/php/chats (sends nothing)
 ```
 
 Letter placeholders: `{vacancy}` and `{employer}`. The bot command `/resume ru|en` picks the resume
@@ -93,3 +95,13 @@ Set `WEB_PASSWORD` in `.env`; with docker compose the site runs as the `web` ser
 or add HTTPS in front later. Five wrong passwords from one address lock it out for 15 minutes.
 
 Locally: `WEB_PASSWORD=... jobpilot web`, then http://localhost:8080.
+
+## Chats (v4)
+
+Every hour from 08:20 to 23:50 the worker reads the account's chats on hh (the page hh.ru/chat and the
+chat app's own API) and copies new messages into the tables `chats` and `messages`. Only chats whose
+last message changed are opened, and nothing is posted to hh, so chats stay unread there. A new employer
+message is announced in Telegram; a chat state such as "discard" or "interview" also moves the stage
+(never over a manual one). The site's "Чаты" page lists the chats with the stage of the matching
+application and shows the open chat; the application card shows its chat too. Replies are still sent on
+hh: sending from the site is v8.

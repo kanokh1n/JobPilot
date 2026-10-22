@@ -66,3 +66,6 @@
     });
   }
 })();
+
+// An open chat starts at its latest message.
+document.querySelectorAll(".chat-open .thread, .panel .thread").forEach((t) => { t.scrollTop = t.scrollHeight; });

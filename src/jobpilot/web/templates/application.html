@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import pill %}
+{% from "_macros.html" import pill, thread %}
 {% block title %}{{ row.name }} · JobPilot{% endblock %}
 {% block body %}
 <p><a href="javascript:history.back()">← назад</a></p>
@@ -36,6 +36,10 @@
       <span class="muted">{{ 'вы' if h.changed_by == 'user' else 'система' }}{% if h.comment %} · {{ h.comment }}{% endif %}</span></li>
     {% else %}<li class="muted">Пусто.</li>{% endfor %}
   </ul>
+  {% if chat %}
+  <h3>Переписка <a class="small" href="/chats/{{ chat.id }}">открыть в чатах</a></h3>
+  {{ thread(messages) }}
+  {% endif %}
   {% if row.letter %}
   <h3>Сопроводительное</h3>
   <pre class="letter">{{ row.letter }}</pre>

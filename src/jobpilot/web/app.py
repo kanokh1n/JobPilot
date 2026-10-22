@@ -116,6 +116,7 @@ def _render(request: web.Request, template: str, **context) -> web.Response:
     context.setdefault("accounts", queries.accounts(site.db.conn, list(site.configured_accounts())))
     context.setdefault("path", request.path)
     context.setdefault("last_event", queries.last_event_id(site.db.conn))
+    context.setdefault("unread", queries.unread_total(site.db.conn))
     html = request.app[TEMPLATES].get_template(template).render(**context)
     return web.Response(text=html, content_type="text/html")
 
@@ -262,7 +263,27 @@ async def application_page(request: web.Request) -> web.Response:
     row = db.application(app_id)
     if row is None:
         raise web.HTTPNotFound(text="нет такого отклика")
+    chat = queries.chat_for_application(db.conn, app_id)
     return _render(request, "application.html", row=row, history=db.stage_history(app_id),
+                   custom_stages=queries.custom_stages(db.conn), chat=chat,
+                   messages=db.chat_messages(chat["id"]) if chat else [])
+
+
+async def chats_page(request: web.Request) -> web.Response:
+    """Chat list on the left, the open chat on the right (or alone on a phone). Read-only until v8."""
+    site: Site = request.app[SITE]
+    db = site.db
+    account, q = request.query.get("account", ""), request.query.get("q", "").strip()
+    chat = messages = app = None
+    if "id" in request.match_info:
+        chat = db.chat(int(request.match_info["id"]))
+        if chat is None:
+            raise web.HTTPNotFound(text="нет такого чата")
+        messages = db.chat_messages(chat["id"])
+        app = db.application(chat["application_id"]) if chat["application_id"] else None
+    params = urlencode({k: v for k, v in {"account": account, "q": q}.items() if v})
+    return _render(request, "chats.html", chats=queries.chats(db.conn, account, q), chat=chat,
+                   messages=messages or [], app=app, account=account, q=q, qs=f"?{params}" if params else "",
                    custom_stages=queries.custom_stages(db.conn))
 
 
@@ -326,6 +347,8 @@ def build_app(site: Site) -> web.Application:
         web.get("/stages", stages_page),
         web.get("/account/{name}", account_page),
         web.get(r"/application/{id:\d+}", application_page),
+        web.get("/chats", chats_page),
+        web.get(r"/chats/{id:\d+}", chats_page),
         web.post(r"/api/applications/{id:\d+}/stage", api_stage),
         web.post(r"/api/applications/{id:\d+}/note", api_note),
         web.get("/api/last-event", api_last_event),
