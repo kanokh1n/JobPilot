@@ -1,0 +1,34 @@
+{% macro pill(stage, manual=False) -%}
+<span class="pill s-{{ stage or 'none' }}">{{ label(stage) }}{% if manual %} ✎{% endif %}</span>
+{%- endmacro %}
+
+{% macro hold_banner(hold) -%}
+{% if hold.paused %}<div class="banner warn">Отклики на паузе (команда /pause в боте). Снять: /unpause.</div>{% endif %}
+{% if hold.captcha_until %}<div class="banner bad">hh показал капчу: отклики стоят до {{ hold.captcha_until | local }}. Снять раньше: /hh_resume в боте.</div>{% endif %}
+{%- endmacro %}
+
+{% macro funnel(s) -%}
+<div class="funnel">
+  {% for st in STAGE_ORDER %}
+  {% set n = s.by_stage.get(st, 0) %}
+  <a class="step s-{{ st }}" href="?stage={{ st }}#table">
+    <span class="n">{{ n }}</span>
+    <span class="l">{{ LABELS[st] }}</span>
+    <span class="bar"><i style="width: {{ (100 * n / s.total) | round(1) if s.total else 0 }}%"></i></span>
+  </a>
+  {% endfor %}
+</div>
+{%- endmacro %}
+
+{% macro bars(daily) -%}
+{% set top = daily | map(attribute='n') | max %}
+<div class="bars" role="img" aria-label="Отклики по дням">
+  {% for d in daily %}
+  <div class="col" title="{{ d.day.strftime('%d.%m') }}: {{ d.n }}">
+    <span class="v">{{ d.n if d.n else '' }}</span>
+    <i style="height: {{ (100 * d.n / top) | round(1) if top else 0 }}%"></i>
+    <span class="d">{{ d.day.strftime('%d') }}</span>
+  </div>
+  {% endfor %}
+</div>
+{%- endmacro %}

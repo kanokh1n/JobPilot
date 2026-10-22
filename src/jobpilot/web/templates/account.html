@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% from "_macros.html" import funnel, bars, hold_banner %}
+{% block title %}{{ name }} · JobPilot{% endblock %}
+{% block body %}
+{{ hold_banner(hold) }}
+<h1>Аккаунт {{ name }}</h1>
+<section class="cards">
+  <div class="card"><span class="n">{{ summary.today }}{% if limit %}<small> / {{ limit }}</small>{% endif %}</span><span class="l">сегодня{% if limit %} из лимита{% endif %}</span></div>
+  <div class="card"><span class="n">{{ summary.week }}</span><span class="l">за 7 дней</span></div>
+  <div class="card"><span class="n">{{ summary.total }}</span><span class="l">всего отправлено</span></div>
+  <div class="card"><span class="n">{{ summary.answered }}</span><span class="l">ответили ({{ summary.answer_rate }}%)</span></div>
+</section>
+<p class="muted small">Резюме: {{ hold.resume_lang | upper }}{% if per_pass %} · до {{ per_pass }} откликов за проход{% endif %} · пропущено вакансий: {{ summary.skipped }}</p>
+<div class="grid2">
+  <section class="panel">{{ funnel(summary) }}</section>
+  <section class="panel"><h3>Отклики по дням</h3>{{ bars(daily) }}</section>
+</div>
+<h2>Отклики</h2>
+{% with show_account = False %}{% include "_table.html" %}{% endwith %}
+{% endblock %}

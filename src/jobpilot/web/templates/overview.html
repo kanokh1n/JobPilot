@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% from "_macros.html" import funnel, bars, hold_banner, pill %}
+{% block body %}
+{{ hold_banner(hold) }}
+<section class="cards">
+  <div class="card"><span class="n">{{ total.today }}</span><span class="l">откликов сегодня</span></div>
+  <div class="card"><span class="n">{{ total.week }}</span><span class="l">за 7 дней</span></div>
+  <div class="card"><span class="n">{{ total.total }}</span><span class="l">всего отправлено</span></div>
+  <div class="card"><span class="n">{{ total.answered }}</span><span class="l">ответили ({{ total.answer_rate }}%)</span></div>
+</section>
+
+<h2>Воронка по аккаунтам</h2>
+<div class="grid2">
+  {% for name in accounts %}
+  {% set s = per_account[name] %}
+  <section class="panel">
+    <h3><a href="/account/{{ name }}">{{ name }}</a> <span class="muted">· {{ s.total }} отправлено, {{ s.today }} сегодня</span></h3>
+    <div class="funnel compact">
+      {% for st in STAGE_ORDER %}{% set n = s.by_stage.get(st, 0) %}
+      <a class="step s-{{ st }}" href="/account/{{ name }}?stage={{ st }}#table"><span class="n">{{ n }}</span><span class="l">{{ LABELS[st] }}</span>
+        <span class="bar"><i style="width: {{ (100 * n / s.total) | round(1) if s.total else 0 }}%"></i></span></a>
+      {% endfor %}
+    </div>
+  </section>
+  {% else %}
+  <p class="muted">Откликов пока нет.</p>
+  {% endfor %}
+</div>
+
+<div class="grid2">
+  <section class="panel">
+    <h3>Отклики по дням, 2 недели</h3>
+    {{ bars(daily) }}
+  </section>
+  <section class="panel">
+    <h3>Последние изменения этапов</h3>
+    <ul class="changes">
+      {% for c in changes %}
+      <li><span class="muted nowrap">{{ c.at | local }}</span> {{ pill(c.stage, c.changed_by == 'user') }}
+        <a href="/application/{{ c.application_id }}">{{ c.name }}</a> <span class="muted">· {{ c.employer }} · {{ c.account }}</span></li>
+      {% else %}
+      <li class="muted">Пока никто не ответил.</li>
+      {% endfor %}
+    </ul>
+  </section>
+</div>
+{% endblock %}

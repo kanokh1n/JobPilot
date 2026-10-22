@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% from "_macros.html" import pill %}
+{% block title %}{{ row.name }} · JobPilot{% endblock %}
+{% block body %}
+<p><a href="javascript:history.back()">← назад</a></p>
+<h1>{{ row.name }}</h1>
+<p class="muted">{{ row.employer }} · аккаунт {{ row.account }} · {{ row.applied_at | local('%d.%m.%Y %H:%M') }} · <a href="{{ row.url }}" target="_blank" rel="noopener">открыть на hh ↗</a></p>
+<div class="grid2">
+<section class="panel" data-id="{{ row.id }}">
+  <h3>Этап</h3>
+  {% if row.stage is not none %}
+  <select class="stage s-{{ row.stage }}" data-current="{{ row.stage }}">
+    {% for st in STAGE_ORDER %}<option value="{{ st }}" {% if row.stage == st %}selected{% endif %}>{{ LABELS[st] }}{% if row.stage == st and row.stage_manual %} ✎{% endif %}</option>{% endfor %}
+    {% for st in custom_stages %}<option value="{{ st }}" {% if row.stage == st %}selected{% endif %}>{{ st }}{% if row.stage == st and row.stage_manual %} ✎{% endif %}</option>{% endfor %}
+    <option value="__custom__">свой этап…</option>
+    {% if row.stage_manual %}<option value="__auto__">↺ вернуть автомат</option>{% endif %}
+  </select>
+  <p class="muted small">{{ 'Поставлен вручную, система его не меняет.' if row.stage_manual else 'Ставит система по статусу hh.' }}</p>
+  {% else %}
+  <p>{{ pill(none) }} <span class="muted">статус: {{ row.status }}</span></p>
+  {% endif %}
+  <h3>Заметка</h3>
+  <textarea class="note" rows="4" maxlength="2000" placeholder="например: созвон с HR во вторник">{{ row.note }}</textarea>
+  <dl class="meta">
+    <dt>Статус воркера</dt><dd>{{ row.status }}</dd>
+    <dt>Статус на hh</dt><dd>{{ row.hh_state or '—' }}</dd>
+    <dt>Резюме</dt><dd>{{ (row.resume_lang or '—') | upper }}</dd>
+    <dt>Напоминаний</dt><dd>{{ row.reminders }}{% if row.last_reminder_at %} (последнее {{ row.last_reminder_at | local }}){% endif %}</dd>
+  </dl>
+</section>
+<section class="panel">
+  <h3>История этапов</h3>
+  <ul class="changes">
+    {% for h in history | reverse %}
+    <li><span class="muted nowrap">{{ h.at | local }}</span> {{ pill(h.stage, h.changed_by == 'user') }}
+      <span class="muted">{{ 'вы' if h.changed_by == 'user' else 'система' }}{% if h.comment %} · {{ h.comment }}{% endif %}</span></li>
+    {% else %}<li class="muted">Пусто.</li>{% endfor %}
+  </ul>
+  {% if row.letter %}
+  <h3>Сопроводительное</h3>
+  <pre class="letter">{{ row.letter }}</pre>
+  {% endif %}
+</section>
+</div>
+{% endblock %}

@@ -78,3 +78,18 @@ a row stop the account.
 Status: search, keyword rules, limits, letters, bookkeeping and the dry run are covered by tests. The page
 selectors (`hh/selectors.py`) and the negotiations scan / reminder sending (`hh/followup.py`) still have
 to be written and checked against the live site.
+
+## Site (v3)
+
+`jobpilot web` serves a small site over the same database: an overview of both accounts
+(funnel by stage, applications per day, latest stage changes), a page per account and the
+stage table of every application. A stage picked in the table is marked as manual (✎) and the
+hh worker no longer changes it; "вернуть автомат" hands it back to the system. Notes are saved
+when the field loses focus.
+
+Set `WEB_PASSWORD` in `.env`; with docker compose the site runs as the `web` service on port 8080
+(`http://SERVER_IP:8080`). The traffic is plain HTTP, so on an untrusted network either put
+`WEB_PUBLISH=127.0.0.1:8080` in `.env` and open it through `ssh -L 8080:localhost:8080 root@SERVER_IP`,
+or add HTTPS in front later. Five wrong passwords from one address lock it out for 15 minutes.
+
+Locally: `WEB_PASSWORD=... jobpilot web`, then http://localhost:8080.

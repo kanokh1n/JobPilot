@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}JobPilot{% endblock %}</title>
+<link rel="stylesheet" href="/static/site.css">
+</head>
+<body data-last-event="{{ last_event }}">
+{% if accounts is defined and path != '/login' %}
+<header class="top">
+  <a class="brand" href="/">JobPilot</a>
+  <nav>
+    <a href="/" {% if path == '/' %}class="on"{% endif %}>Общая</a>
+    {% for a in accounts %}
+    <a href="/account/{{ a }}" {% if path == '/account/' ~ a %}class="on"{% endif %}>{{ a }}</a>
+    {% endfor %}
+    <a href="/stages" {% if path == '/stages' %}class="on"{% endif %}>Этапы</a>
+  </nav>
+  <form method="post" action="/logout"><button class="link">Выйти</button></form>
+</header>
+{% endif %}
+<div id="fresh" class="fresh" hidden>Есть новые данные. <a href="">Обновить</a></div>
+<main>
+{% block body %}{% endblock %}
+</main>
+<script src="/static/site.js"></script>
+</body>
+</html>

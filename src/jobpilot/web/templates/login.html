@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Вход · JobPilot{% endblock %}
+{% block body %}
+<form class="login" method="post" action="/login">
+  <h1>JobPilot</h1>
+  <input type="hidden" name="next" value="{{ next }}">
+  <label>Пароль<input type="password" name="password" autofocus required autocomplete="current-password"></label>
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  <button>Войти</button>
+</form>
+{% endblock %}

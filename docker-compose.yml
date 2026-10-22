@@ -1,10 +1,27 @@
 services:
   jobpilot:
     build: .
+    image: jobpilot:latest
     restart: unless-stopped
     env_file: .env
     environment:
       DATA_DIR: /app/data
+    volumes:
+      - ./data:/app/data
+      - ./accounts.toml:/app/accounts.toml:ro
+
+  # The site (v3): same image, its own process, reads and edits the same database file.
+  web:
+    image: jobpilot:latest
+    depends_on: [jobpilot]
+    restart: unless-stopped
+    command: ["jobpilot", "web"]
+    env_file: .env
+    environment:
+      DATA_DIR: /app/data
+      WEB_PORT: "8080"
+    ports:
+      - "${WEB_PUBLISH:-8080}:8080"
     volumes:
       - ./data:/app/data
       - ./accounts.toml:/app/accounts.toml:ro

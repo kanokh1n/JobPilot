@@ -148,6 +148,28 @@ class Database:
         )
         self._log_stage(app_id, row["account"], stage, "user", comment)
 
+    def release_stage(self, app_id: int) -> None:
+        """Undo a manual stage: the system takes over again from what hh last said."""
+        row = self.application(app_id)
+        if row is None:
+            raise LookupError(f"no application {app_id}")
+        stage = (stages.stage_for_hh_state(row["hh_state"]) if row["hh_state"] else None) \
+            or stages.stage_for_status(row["status"])
+        self._conn.execute(
+            "UPDATE applications SET stage = ?, stage_manual = 0, updated_at = ? WHERE id = ?",
+            (stage, _now(), app_id),
+        )
+        if stage:
+            self._log_stage(app_id, row["account"], stage, "user", "этап снова ставит система")
+
+    def set_note(self, app_id: int, note: str) -> None:
+        cur = self._conn.execute(
+            "UPDATE applications SET note = ?, updated_at = ? WHERE id = ?", (note, _now(), app_id)
+        )
+        if cur.rowcount == 0:
+            raise LookupError(f"no application {app_id}")
+        self.event("note", ref_id=app_id)
+
     # --- hh.ru applications ---
 
     def _hh_id(self, account: str, vacancy_id: str) -> int | None:
