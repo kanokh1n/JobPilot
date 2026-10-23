@@ -1,6 +1,5 @@
-"""v8: shared browser per account, the live chat watcher, replies from the site and the status filter."""
+"""v8 over the hh app API: the live chat watcher, replies from the site and the status filter."""
 import asyncio
-import json
 from collections import deque
 from datetime import datetime, timezone
 
@@ -8,52 +7,16 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from jobpilot.db import Database
 from jobpilot.hh.apply import CaptchaError
-from jobpilot.hh.browsers import SharedBrowsers
-from jobpilot.hh.live import ChatWatcher, is_news, live_on, send_pending, wait_before_sync
+from jobpilot.hh.live import ChatWatcher, live_on, send_pending, wait_before_sync
 from jobpilot.web import queries
 from jobpilot.web.app import Site, build_app
 
-from test_chats import LETTER, ME, REPLY, FakePage, _chat_data, _item, _listing
+from test_chats import LETTER, REPLY, FakeClient, _chat_data, _item, _listing
 
 PASSWORD = "correct horse"
 
 
-class Opened:
-    """Stands in for HHBrowser in SharedBrowsers."""
-    log: list = []
-
-    def __init__(self, profile, shots):
-        self.profile, self.closed = profile, False
-
-    async def __aenter__(self):
-        Opened.log.append(("open", self.profile.name))
-        return self
-
-    async def __aexit__(self, *exc):
-        Opened.log.append(("close", self.profile.name))
-
-
-def test_one_browser_per_account_while_anyone_uses_it(tmp_path):
-    Opened.log = []
-    browsers = SharedBrowsers(tmp_path, factory=Opened)
-
-    async def main():
-        async with browsers.use("php") as a:
-            async with browsers.use("php") as b:  # the apply pass while the watcher holds it
-                assert a is b
-            assert browsers.is_open("php")
-            a.closed = True  # Chromium died
-            async with browsers.use("php") as c:
-                assert c is not a
-        assert not browsers.is_open("php")
-
-    asyncio.run(main())
-    assert Opened.log == [("open", "php"), ("open", "php"), ("close", "php"), ("close", "php")]
-
-
-def test_frames_and_rate_limit():
-    assert not is_news("ping") and not is_news('{"type":"pong"}')
-    assert is_news(json.dumps({"type": "chat_message", "chatId": 5, "message": {"text": "Добрый день"}}))
+def test_rate_limit():
     recent = deque([0.0])
     assert wait_before_sync(10, recent, min_gap=60, per_hour=20) == 50
     recent = deque(float(i) for i in range(3))
@@ -61,142 +24,67 @@ def test_frames_and_rate_limit():
     assert wait_before_sync(4000, recent, min_gap=60, per_hour=3) == 0 and not recent
 
 
-class LivePage(FakePage):
-    """The chat page of the watcher: hands its websocket to the watcher, counts reloads."""
+class Unread(FakeClient):
+    def __init__(self, *args, **kw):
+        super().__init__(*args, **kw)
+        self.count, self.captcha = 0, False
 
-    def __init__(self, state, answers):
-        super().__init__(state, answers)
-        self.handlers, self.loads, self.closed = {}, 0, False
-
-    def on(self, event, handler):
-        self.handlers[event] = handler
-
-    async def goto(self, url, **kw):
-        self.loads += 1
-
-    async def close(self):
-        self.closed = True
+    async def unread(self):
+        if self.captcha:
+            raise CaptchaError("chats")
+        return self.count
 
 
-class Socket:
-    url = "wss://websocket.hh.ru/chatik"
-
-    def __init__(self):
-        self.handlers = {}
-
-    def on(self, event, handler):
-        self.handlers[event] = handler
-
-
-class Holder:
-    def __init__(self, page):
-        self.context = self
-        self.page = page
-
-    async def new_page(self):
-        return self.page
-
-    async def has_captcha(self, page, label):
-        return False
-
-
-class OneBrowser:
-    def __init__(self, browser):
-        self.browser = browser
-
-    def use(self, account):
-        browser = self.browser
-
-        class Ctx:
-            async def __aenter__(self):
-                return browser
-
-            async def __aexit__(self, *exc):
-                pass
-
-        return Ctx()
-
-
-def test_watcher_reads_on_chat_frames_only(tmp_path):
+def test_watcher_reads_when_the_unread_count_changes(tmp_path):
     db = Database(tmp_path / "t.db")
-    page = LivePage({"userId": ME, "chats": _listing([_item(1, "137", LETTER)])},
-                    {"chatId=1&": _chat_data(1, [LETTER, REPLY])})
-    summaries, allowed = [], {"on": True}
+    client = Unread({None: _listing([_item(1, "137", LETTER)])}, {"1": _chat_data(1, [LETTER, REPLY])})
+    summaries, captchas, clock = [], [], {"t": 0.0}
+    allowed = {"on": True}
 
     async def on_summary(summary):
         summaries.append(summary)
 
-    async def no_captcha():
-        raise AssertionError
+    async def on_captcha():
+        captchas.append(1)
 
-    watcher = ChatWatcher(db, OneBrowser(Holder(page)), "go", may_run=lambda: allowed["on"],
-                          on_summary=on_summary, on_captcha=no_captcha, frames_log=tmp_path / "ws.txt",
-                          debounce=0, min_gap=0, quiet=0, idle_check=0.05, fallback=3600,
-                          pause=lambda _: asyncio.sleep(0))
+    async def tick(seconds):
+        clock["t"] += seconds
+
+    watcher = ChatWatcher(db, client, "go", may_run=lambda: allowed["on"], on_summary=on_summary,
+                          on_captcha=on_captcha, poll=120, min_gap=0, fallback=3600, idle_check=60,
+                          clock=lambda: clock["t"], sleep=tick, pause=lambda _: asyncio.sleep(0))
 
     async def main():
-        task = asyncio.create_task(watcher._session())
-        await asyncio.sleep(0.05)
-        assert page.loads == 1 and watcher.syncs == 1
-        ws = Socket()
-        page.handlers["websocket"](ws)
-        ws.handlers["framereceived"]("ping")
-        await asyncio.sleep(0.1)
-        assert watcher.syncs == 1  # a ping is not news
-        ws.handlers["framereceived"](json.dumps({"chatId": 1, "message": {"text": "Приглашаем на интервью"}}, ensure_ascii=False))
-        await asyncio.sleep(0.1)
-        assert watcher.syncs == 2 and page.loads == 2
-        allowed["on"] = False  # captcha elsewhere, pause or night: the watcher lets the page go
-        await asyncio.wait_for(task, 1)
+        await watcher.step()
+        assert watcher.syncs == 1  # the first round always reads
+        await watcher.step()
+        assert watcher.syncs == 1  # same count: only the small unread request
+        client.count = 1
+        await watcher.step()
+        assert watcher.syncs == 2
+        clock["t"] += 3600
+        await watcher.step()
+        assert watcher.syncs == 3  # nothing new for an hour: read anyway
+        allowed["on"] = False
+        await watcher.step()
+        assert watcher.syncs == 3
+        allowed["on"] = True
+        await watcher.step()
+        assert watcher.syncs == 4  # after a break it reads again first
+        client.captcha = True
+        await watcher.step()
+        assert captchas == [1]
 
     asyncio.run(main())
-    assert page.closed and len(summaries) == 2
-    assert "Приглашаем" in (tmp_path / "ws.txt").read_text()
-    assert db.get("hh_chat_me:go") == ME
+    assert len(summaries) == 4
 
 
-class ReplyPage(LivePage):
-    """hh.ru/chat/<id>: a text box that shows what was typed as the last bubble."""
+class Clients:
+    def __init__(self, client):
+        self.client = client
 
-    def __init__(self, answers, echo=True):
-        super().__init__({}, answers)
-        self.typed, self.echo, self.url = "", echo, "https://hh.ru/chat/1"
-
-    def locator(self, selector):
-        page = self
-
-        class Loc:
-            first = last = property(lambda self: self)
-
-            async def wait_for(self, timeout=None):
-                pass
-
-            async def fill(self, text):
-                page.typed = text
-
-            async def press(self, key):
-                assert key == "Enter"
-
-            async def count(self):
-                return 1
-
-            async def inner_text(self):
-                return page.typed if page.echo else "старое"
-
-        return Loc()
-
-    async def wait_for_timeout(self, ms):
-        pass
-
-    async def screenshot(self, path):
-        pass
-
-
-class ReplyBrowser(Holder):
-    screenshots_dir = None
-
-    async def has_captcha(self, page, label):
-        return self.captcha
+    def get(self, account):
+        return self.client
 
 
 def _chat(db):
@@ -207,11 +95,8 @@ def _chat(db):
 def test_reply_goes_out_and_comes_back_as_an_hh_message(tmp_path):
     db = Database(tmp_path / "t.db")
     chat_id = _chat(db)
-    db.set("hh_chat_me:go", ME)
     mine = {**LETTER, "id": 13, "text": "Да, удобно в четверг", "creationTime": "2026-10-22T12:00:00+03:00"}
-    page = ReplyPage({"chatId=1&": _chat_data(1, [LETTER, REPLY, mine])})
-    browser = ReplyBrowser(page)
-    browser.captcha = False
+    client = FakeClient({}, {"1": _chat_data(1, [LETTER, REPLY, mine])})
     outbox_id = db.outbox_add(chat_id, "Да, удобно в четверг")
     assert [r["id"] for r in db.outbox_for_chat(chat_id)] == [outbox_id]
     notes = []
@@ -222,21 +107,26 @@ def test_reply_goes_out_and_comes_back_as_an_hh_message(tmp_path):
     async def captcha(account):
         raise AssertionError
 
-    sent = asyncio.run(send_pending(db, OneBrowser(browser), may_send=lambda: True, notify=notify,
+    sent = asyncio.run(send_pending(db, Clients(client), may_send=lambda: True, notify=notify,
                                     on_captcha=captcha))
-    assert sent == 1 and page.typed == "Да, удобно в четверг" and not notes
+    assert sent == 1 and client.sent == [("1", "Да, удобно в четверг")] and not notes
     assert db.outbox_item(outbox_id)["status"] == "sent"
     assert db.outbox_for_chat(chat_id) == []  # the copy from hh replaced it
     assert [m["text"] for m in db.chat_messages(chat_id)][-1] == "Да, удобно в четверг"
     assert db.chat(chat_id)["last_message_at"] == "2026-10-22T09:00:00+00:00"
 
 
+class Failing(FakeClient):
+    error: Exception = RuntimeError("HTTP 500")
+
+    async def send_message(self, chat_id, text):
+        raise self.error
+
+
 def test_failed_and_captcha_replies(tmp_path):
     db = Database(tmp_path / "t.db")
     chat_id = _chat(db)
-    page = ReplyPage({}, echo=False)
-    browser = ReplyBrowser(page)
-    browser.captcha = False
+    client = Failing({})
     bad = db.outbox_add(chat_id, "Привет")
     notes, captchas = [], []
 
@@ -246,15 +136,15 @@ def test_failed_and_captcha_replies(tmp_path):
     async def captcha(account):
         captchas.append(account)
 
-    run = lambda: asyncio.run(send_pending(db, OneBrowser(browser), may_send=lambda: True, notify=notify,
+    run = lambda: asyncio.run(send_pending(db, Clients(client), may_send=lambda: True, notify=notify,
                                            on_captcha=captcha))
     assert run() == 0
     row = db.outbox_item(bad)
-    assert row["status"] == "error" and "did not appear" in row["error"] and "Go dev" in notes[0]
+    assert row["status"] == "error" and "HTTP 500" in row["error"] and "Go dev" in notes[0]
     assert db.outbox_pending() == []  # not tried again by itself
 
     db.outbox_mark(bad, "pending")  # "повторить" on the site
-    browser.captcha = True
+    client.error = CaptchaError("send")
     assert run() == 0 and captchas == ["go"] and db.outbox_item(bad)["status"] == "pending"
 
 

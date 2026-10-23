@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from jobpilot.core import stages
 from jobpilot.db import Database
 from jobpilot.hh import chats as hh_chats
-from jobpilot.hh.chats import initial_state, parse_chat_list, parse_messages, sync_chats
+from jobpilot.hh.chats import parse_chat_list, parse_messages, sync_chats
 
 ME = "100"
 
@@ -58,51 +58,32 @@ def test_parse_list_and_messages():
     assert messages[1].author == "Елена" and messages[1].text == "Спасибо, но <нет>"
 
 
-def test_initial_state_from_page():
-    state = {"userId": ME, "chats": _listing([_item(1, "137", LETTER)])}
-    page = f'<div><template style="display: none" class="Chatik-InitialState">{json.dumps(state)}</template></div>'
-    assert parse_chat_list(initial_state(page)["chats"]).chats[0].id == "1"
+class FakeClient:
+    """Answers like HHClient: chat list pages by cursor, chat_data by chat id."""
+
+    def __init__(self, pages, chats=None, sent=None):
+        self.pages, self.chats, self.fetched = pages, chats or {}, []
+        self.sent = sent if sent is not None else []
+
+    async def chat_list(self, cursor=None):
+        self.fetched.append(("list", cursor))
+        if cursor not in self.pages:
+            raise RuntimeError(f"no page {cursor}")
+        return json.loads(json.dumps(self.pages[cursor]))
+
+    async def chat_data(self, chat_id):
+        self.fetched.append(("chat", chat_id))
+        return self.chats[chat_id]
+
+    async def send_message(self, chat_id, text):
+        self.sent.append((chat_id, text))
 
 
-class FakePage:
-    def __init__(self, state, answers):
-        self.url = "https://hh.ru/chat"
-        self._state, self.answers, self.fetched = state, answers, []
-
-    async def goto(self, url, **kw):
-        pass
-
-    async def content(self):
-        return f'<template class="Chatik-InitialState">{json.dumps(self._state)}</template>'
-
-    async def evaluate(self, script, url):
-        self.fetched.append(url)
-        for key, body in self.answers.items():
-            if key in url:
-                return {"status": 200, "type": "application/json", "body": json.dumps(body)}
-        return {"status": 404, "type": "text/html", "body": ""}
-
-    async def close(self):
-        pass
-
-
-class FakeBrowser:
-    def __init__(self, page):
-        self.page = page
-        self.context = self
-
-    async def new_page(self):
-        return self.page
-
-    async def has_captcha(self, page, label):
-        return False
-
-
-def _sync(db, page):
+def _sync(db, client):
     async def no_sleep(_):
         pass
 
-    return asyncio.run(sync_chats(db, FakeBrowser(page), "go", sleep=no_sleep))
+    return asyncio.run(sync_chats(db, client, "go", sleep=no_sleep))
 
 
 def test_sync_links_the_application_and_reads_only_changed_chats(tmp_path):
@@ -111,18 +92,17 @@ def test_sync_links_the_application_and_reads_only_changed_chats(tmp_path):
                  datetime.now(timezone.utc))
     app_id = db.conn.execute("SELECT id FROM applications").fetchone()[0]
 
-    first = FakePage({"userId": ME, "chats": _listing([_item(1, "137", LETTER)])},
-                     {"chatId=1&": _chat_data(1, [LETTER])})
+    first = FakeClient({None: _listing([_item(1, "137", LETTER)])}, {"1": _chat_data(1, [LETTER])})
     s = _sync(db, first)
     assert (s.chats, s.updated, s.new_messages, s.incoming) == (1, 1, 1, [])
     chat = db.conn.execute("SELECT * FROM chats").fetchone()
     assert chat["application_id"] == app_id and chat["vacancy_id"] == "137" and chat["title"] == "Вакансия 1"
 
-    same = FakePage({"userId": ME, "chats": _listing([_item(1, "137", LETTER)])}, {})
-    assert _sync(db, same).updated == 0 and not [u for u in same.fetched if "chat_data" in u]
+    same = FakeClient({None: _listing([_item(1, "137", LETTER)])})
+    assert _sync(db, same).updated == 0 and not [f for f in same.fetched if f[0] == "chat"]
 
-    answered = FakePage({"userId": ME, "chats": _listing([_item(1, "137", REPLY, unread=1, state="DISCARD")])},
-                        {"chatId=1&": _chat_data(1, [LETTER, REPLY])})
+    answered = FakeClient({None: _listing([_item(1, "137", REPLY, unread=1, state="DISCARD")])},
+                          {"1": _chat_data(1, [LETTER, REPLY])})
     s = _sync(db, answered)
     assert s.new_messages == 1 and s.incoming == ["Вакансия 1 (Acme)"] and s.stages_moved == 1
     assert db.application(app_id)["stage"] == stages.REJECTED
@@ -131,23 +111,22 @@ def test_sync_links_the_application_and_reads_only_changed_chats(tmp_path):
     assert db.conn.execute("SELECT COUNT(*) FROM events WHERE kind = 'chat'").fetchone()[0] == 2
 
 
-def test_sync_reads_older_pages_while_they_change(tmp_path, monkeypatch):
+def test_sync_reads_older_pages_while_they_change(tmp_path):
     db = Database(tmp_path / "t.db")
-    page = FakePage(
-        {"userId": ME, "chats": _listing([_item(1, "137", LETTER)], next_from="c2")},
-        {"from=c2": _listing([_item(2, "138", LETTER)], next_from="c3"),
-         "from=c3": _listing([_item(3, "139", LETTER)]),
-         "chatId=": _chat_data(1, [LETTER])},
+    client = FakeClient(
+        {None: _listing([_item(1, "137", LETTER)], next_from="c2"),
+         "c2": _listing([_item(2, "138", LETTER)], next_from="c3"),
+         "c3": _listing([_item(3, "139", LETTER)])},
+        {str(i): _chat_data(i, [LETTER]) for i in (1, 2, 3)},
     )
-    s = asyncio.run(sync_chats(db, FakeBrowser(page), "go", max_pages=2, sleep=lambda _: asyncio.sleep(0)))
-    assert s.chats == 2 and not [u for u in page.fetched if "from=c3" in u]
+    s = asyncio.run(sync_chats(db, client, "go", max_pages=2, sleep=lambda _: asyncio.sleep(0)))
+    assert s.chats == 2 and ("list", "c3") not in client.fetched
 
 
 def test_a_failing_next_page_keeps_the_first(tmp_path):
     db = Database(tmp_path / "t.db")
-    page = FakePage({"userId": ME, "chats": _listing([_item(1, "137", LETTER)], next_from="c2")},
-                    {"chatId=": _chat_data(1, [LETTER])})
-    assert _sync(db, page).chats == 1
+    client = FakeClient({None: _listing([_item(1, "137", LETTER)], next_from="c2")}, {"1": _chat_data(1, [LETTER])})
+    assert _sync(db, client).chats == 1
 
 
 def test_chat_stages_are_known():

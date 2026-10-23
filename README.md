@@ -47,11 +47,11 @@ The userbot session and the SQLite database live in `./data`.
 
 ## hh.ru module
 
-hh closed the applicant API in December 2025, so it works in two halves:
-
-- **Search** uses the public `api.hh.ru/vacancies` (read-only, still served).
-- **Applying and reminders** drive a real Chromium (Playwright) logged into each account;
-  one persistent browser profile per account in `data/browser/<account>`.
+hh goes through [hh-applicant-tool](https://github.com/s3rgeym/hh-applicant-tool) by Sergey M., installed as
+an unchanged package (`hh/client.py`). It talks to hh like the official Android app: the app's API for
+search, responses, resumes and the list of responses, and the chat app's API with the site cookies saved at
+sign-in. No browser runs anywhere, so the 2 GB server is enough. The token and cookies of each account live in
+`data/hh/<account>/` (`token.json`, `cookies.txt`); the token refreshes itself.
 
 There is no LLM: a vacancy gets a response when its title or snippet contains an `include` word and
 none of the `exclude` words (whole words, case-insensitive, "ё" = "е"), and the response carries one
@@ -60,26 +60,22 @@ template cover letter per language.
 ```
 cp accounts.example.toml accounts.toml       # accounts, queries, resume titles, include/exclude words
 cp data/letters/ru.example.txt data/letters/ru.txt   # and write en.txt; <account>_<lang>.txt overrides
-playwright install chromium
-jobpilot hh-login php        # opens a window: sign in by hand once
+jobpilot hh-auth php +79991234567   # once: asks for the SMS code (and a captcha, if hh shows one)
+jobpilot hh-whoami php       # who is signed in and which resumes hh sees
 jobpilot hh-search php       # prints what the queries find, nothing else
-jobpilot hh-dump php <vacancy-url>   # saves the vacancy, response window and negotiations pages to data/dumps (sends nothing)
+jobpilot hh-explain php      # why each found vacancy is taken or skipped
 jobpilot hh-run php          # dry run: prints which vacancies it would respond to
 jobpilot hh-run php --live   # really applies
 jobpilot hh-chats php        # copies the employer chats into the database once (read-only)
-jobpilot hh-chats-dump php   # saves what the hh chat app loads to data/dumps/php/chats (sends nothing)
 ```
 
 Letter placeholders: `{vacancy}` and `{employer}`. The bot command `/resume ru|en` picks the resume
 and the letter language.
 
 Safety: the daily limit ramps up from `start_limit` by `ramp_step` a day to `max_limit`, applications
-only go out 09:00-21:00 local time with a 1-4 minute pause between them, a captcha or three failures in
-a row stop the account.
-
-Status: search, keyword rules, limits, letters, bookkeeping and the dry run are covered by tests. The page
-selectors (`hh/selectors.py`) and the negotiations scan / reminder sending (`hh/followup.py`) still have
-to be written and checked against the live site.
+only go out 09:00-21:00 local time with a 1-3 minute pause between them, a captcha or three failures in
+a row stop the account, and hh's own daily limit ends the pass. On a captcha the worker does not solve it:
+the picture goes to Telegram and both accounts rest 3, then 12, then 24 hours.
 
 ## Site (v3)
 
@@ -96,35 +92,20 @@ or add HTTPS in front later. Five wrong passwords from one address lock it out f
 
 Locally: `WEB_PASSWORD=... jobpilot web`, then http://localhost:8080.
 
-## Chats (v4)
+## Chats (v4, v8)
 
-Every hour from 08:20 to 23:50 the worker reads the account's chats on hh (the page hh.ru/chat and the
-chat app's own API) and copies new messages into the tables `chats` and `messages`. Only chats whose
-last message changed are opened, and nothing is posted to hh, so chats stay unread there. A new employer
-message is announced in Telegram; a chat state such as "discard" or "interview" also moves the stage
-(never over a manual one). The site's "Чаты" page lists the chats with the stage of the matching
-application and shows the open chat; the application card shows its chat too. Replies are still sent on
-hh: sending from the site is v8.
-
-## Live chats and replies (v8)
-
-Each hh account now has one shared browser (`hh/browsers.py`): the apply, reminder, resume and chat jobs
-borrow it instead of opening the profile themselves, so they no longer clash over it. From 8:00 to 24:00
-a watcher (`hh/live.py`) keeps https://hh.ru/chat open in that browser; when the chat app's websocket
-reports a chat event, the chats are read again at once (at most once a minute and 20 times an hour per
-account), otherwise once an hour as before. A captcha hold, the global pause or the "Чаты hh в реальном
-времени" switch on /settings closes the watcher; with the switch off chats are read hourly again (use it
-if the server runs short of memory: the watcher keeps two Chromiums open in the daytime).
+The worker copies the account's hh chats (the chat app's API: the list, then the messages of every chat
+whose last message changed) into the tables `chats` and `messages`. Nothing is marked read on hh. A new
+employer message is announced in Telegram; a chat state such as "discard" or "interview" also moves the
+stage (never over a manual one). From 8:00 to 24:00 a watcher (`hh/live.py`) asks for the unread count
+every two minutes and reads the chats when it changes (at most once a minute and 20 times an hour), and
+once an hour anyway. With "Чаты hh в реальном времени" off on /settings, chats are read hourly.
 
 Replies are typed on the chat page of the site. They wait in the `outbox` table; the worker checks it
-every 15 seconds and types the text into the hh chat like a person, then copies the chat back. During a
-captcha hold they wait; a failed one shows on the site with "повторить" and is never retried by itself.
-The chat list can be filtered by hh status (приглашение, отказ, оффер, без ответа), unread chats and
-chats where the employer wrote last. Database v4 adds `chats.state`.
-
-Not verified on live hh yet: the frames of the chat websocket (the first 40 of each session go to
-`data/dumps/<account>/ws_frames.txt`, and `jobpilot hh-chats-dump <account>` saves them to `ws.txt`) and the
-message box on hh.ru/chat/<id> (the same `data-qa="text-input"` as in the response iframe is assumed).
+every 15 seconds, sends the text through the chat API and copies the chat back. During a captcha hold
+they wait; a failed one shows on the site with "повторить" and is never retried by itself. The chat list
+can be filtered by hh status (приглашение, отказ, оффер, без ответа), unread chats and chats where the
+employer wrote last.
 
 ## Calendar and charts (v5)
 

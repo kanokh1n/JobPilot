@@ -131,7 +131,7 @@ def _run(tmp_path, db, vacancies, browser, live=True, notify=print, account=ACCO
         return None
 
     return asyncio.run(apply_pass(
-        db=db, account=account, search=search or FakeSearch(vacancies), browser=browser,
+        db=db, account=account, search=search or FakeSearch(vacancies), client=browser,
         letters_dir=tmp_path, tz=TZ, live=live, sleep=no_sleep, now=now, notify=notify,
     ))
 
@@ -245,3 +245,34 @@ def test_prune_screenshots_keeps_only_the_last_day(tmp_path):
     assert prune_screenshots(tmp_path) == 1
     assert not old.exists() and fresh.exists()
     assert prune_screenshots(tmp_path / "missing") == 0
+
+
+def test_search_pages_are_loaded_once_per_search_every_hours(tmp_path):
+    from dataclasses import replace
+
+    from jobpilot.hh.pipeline import collect_candidates
+
+    class CountingSearch(FakeSearch):
+        calls = 0
+
+        async def search(self, text, params=None, period_days=1):
+            CountingSearch.calls += 1
+            return await super().search(text, params, period_days)
+
+    db = Database(tmp_path / "t.db")
+    account = replace(ACCOUNT, search_every_hours=3)
+    search = CountingSearch(_vacancies(3))
+    first = asyncio.run(collect_candidates(search, account, db, NOON))
+    db.hh_record("go", "0", "v0", "E", "u", "ru", "", "applied")
+    again = asyncio.run(collect_candidates(search, account, db, NOON + timedelta(hours=2)))
+    assert CountingSearch.calls == 1 and len(first) == 3 and [v.id for v in again] == ["1", "2"]
+    asyncio.run(collect_candidates(search, account, db, NOON + timedelta(hours=3)))
+    assert CountingSearch.calls == 2
+
+
+def test_hh_daily_limit_stops_without_recording(tmp_path):
+    db = Database(tmp_path / "t.db")
+    browser = FakeBrowser([ApplyResult.APPLIED, ApplyResult.LIMIT, ApplyResult.APPLIED])
+    summary = _run(tmp_path, db, _vacancies(3), browser)
+    assert summary.applied == 1 and summary.stopped == "hh daily limit" and len(browser.calls) == 2
+    assert not db.hh_seen("go", "1")

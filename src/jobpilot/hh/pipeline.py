@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -81,16 +82,38 @@ def clear_captcha(db: Database) -> None:
     db.set(CAPTCHA_UNTIL, "")
 
 
-async def collect_candidates(search, account: Account, db: Database) -> list[Vacancy]:
-    unique: dict[str, Vacancy] = {}
-    for query in account.queries:
-        for vacancy in await search.search(query, params=account.search_params, period_days=account.search_period):
-            unique.setdefault(vacancy.id, vacancy)
-    return [v for v in unique.values() if not v.has_test and not db.hh_seen_any(v.id)]
+def _cached_search(db: Database, account: Account, now: datetime) -> list[Vacancy] | None:
+    """The last search result while it is younger than `search_every_hours`, else None."""
+    raw = db.get(f"hh_search_cache:{account.name}")
+    if not raw:
+        return None
+    try:
+        cache = json.loads(raw)
+        if now - datetime.fromisoformat(cache["at"]) >= timedelta(hours=account.search_every_hours):
+            return None
+        return [Vacancy(**item) for item in cache["vacancies"]]
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+async def collect_candidates(search, account: Account, db: Database, now: datetime | None = None) -> list[Vacancy]:
+    """New vacancies of the account's queries. Search pages are the bulk of the hh traffic, so the list is
+    loaded once per `search_every_hours` and the hourly passes in between take what is still not applied."""
+    now = now or datetime.now(timezone.utc)
+    found = _cached_search(db, account, now)
+    if found is None:
+        unique: dict[str, Vacancy] = {}
+        for query in account.queries:
+            for vacancy in await search.search(query, params=account.search_params, period_days=account.search_period):
+                unique.setdefault(vacancy.id, vacancy)
+        found = list(unique.values())
+        db.set(f"hh_search_cache:{account.name}",
+               json.dumps({"at": now.isoformat(), "vacancies": [asdict(v) for v in found]}, ensure_ascii=False))
+    return [v for v in found if not v.has_test and not db.hh_seen_any(v.id)]
 
 
 async def apply_pass(
-    *, db: Database, account: Account, search, browser, letters_dir: Path, tz: str,
+    *, db: Database, account: Account, search, client, letters_dir: Path, tz: str,
     live: bool, notify: Callable[[str], None] = print, sleep=asyncio.sleep,
     now: datetime | None = None,
 ) -> Summary:
@@ -113,7 +136,7 @@ async def apply_pass(
         return summary
 
     try:
-        candidates = await collect_candidates(search, account, db)
+        candidates = await collect_candidates(search, account, db, local_now)
     except CaptchaError:
         return on_captcha()
 
@@ -133,9 +156,12 @@ async def apply_pass(
             summary.lines.append(f"[dry run] {vacancy.name} ({vacancy.employer}) {vacancy.url}")
             summary.applied += 1
             continue
-        result = await browser.apply(vacancy, account.resumes[lang], letter)
+        result = await client.apply(vacancy, account.resumes[lang], letter)
         if result is ApplyResult.CAPTCHA:
             return on_captcha()  # not recorded: the vacancy is tried again after the cooldown
+        if result is ApplyResult.LIMIT:
+            summary.stopped = "hh daily limit"  # not recorded either: tried again tomorrow
+            break
         db.hh_record(account.name, vacancy.id, vacancy.name, vacancy.employer, vacancy.url, lang, letter, result.value)
         if result is ApplyResult.APPLIED:
             summary.applied += 1
@@ -144,7 +170,7 @@ async def apply_pass(
             if done_today + summary.applied < limit and summary.applied < account.per_pass:
                 await sleep(pause_seconds())
             continue
-        await sleep(short_pause_seconds())  # opening vacancy pages back to back also looks like a bot
+        await sleep(short_pause_seconds())  # requests back to back also look like a bot
         if result is ApplyResult.FAILED:
             summary.failed += 1
             streak += 1

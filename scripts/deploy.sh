@@ -14,11 +14,13 @@ rsync -az --delete \
   ./ "$HOST:$DIR/"
 ssh "$HOST" "mkdir -p $DIR/data/letters"
 rsync -az data/letters/ "$HOST:$DIR/data/letters/"
-# hh logins: only the exported cookies travel (a browser profile is not portable between Mac and Linux)
-for state in data/browser/*/state.json; do
-  [ -f "$state" ] || continue
-  ssh "$HOST" "mkdir -p $DIR/$(dirname "$state")"
-  scp "$state" "$HOST:$DIR/$state"
+# hh sign-ins made on the Mac (jobpilot hh-auth) go up once: the server refreshes its token from then on,
+# and an older copy from the Mac would break the refresh.
+for dir in data/hh/*/; do
+  [ -f "$dir/token.json" ] || continue
+  ssh "$HOST" "test -f $DIR/$dir/token.json" && continue
+  ssh "$HOST" "mkdir -p $DIR/$dir"
+  scp "$dir"token.json "$dir"cookies.txt "$HOST:$DIR/$dir"
 done
 for file in .env accounts.toml; do
   [ -f "$file" ] && scp "$file" "$HOST:$DIR/$file"

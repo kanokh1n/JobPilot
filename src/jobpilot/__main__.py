@@ -100,29 +100,26 @@ def main() -> None:
         from .core.info import main as db_info
 
         db_info()
-    elif command in ("hh-login", "hh-search", "hh-run", "hh-dump", "hh-remind", "hh-export", "hh-refresh", "hh-explain", "hh-chats-dump", "hh-chats"):
+    elif command in ("hh-auth", "hh-whoami", "hh-search", "hh-run", "hh-remind", "hh-refresh", "hh-explain", "hh-chats"):
         from .hh import cli
 
-        if len(sys.argv) < 3:
-            raise SystemExit(f"Usage: jobpilot {command} <account>" + (" [--live] [--any-time]" if command == "hh-run" else " [--live] [--days N]" if command == "hh-remind" else ""))
+        if len(sys.argv) < 3 or command == "hh-auth" and len(sys.argv) < 4:
+            raise SystemExit(f"Usage: jobpilot {command} <account>" + (
+                " <phone or e-mail> [password]" if command == "hh-auth" else
+                " [--live] [--any-time]" if command == "hh-run" else
+                " [--live] [--days N]" if command == "hh-remind" else ""))
         account = sys.argv[2]
-        if command == "hh-login":
-            cli.login(account)
-        elif command == "hh-dump":
-            if len(sys.argv) < 4:
-                raise SystemExit("Usage: jobpilot hh-dump <account> <vacancy-url>")
-            cli.dump(account, sys.argv[3])
+        if command == "hh-auth":
+            cli.auth(account, sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else None)
+        elif command == "hh-whoami":
+            cli.whoami(account)
         elif command == "hh-chats":
             pages = int(sys.argv[sys.argv.index("--pages") + 1]) if "--pages" in sys.argv else 3
             cli.chats(account, pages)
-        elif command == "hh-chats-dump":
-            cli.chats_dump(account)
         elif command == "hh-explain":
             cli.explain(account)
         elif command == "hh-refresh":
             cli.refresh(account)
-        elif command == "hh-export":
-            cli.export(account)
         elif command == "hh-remind":
             days = int(sys.argv[sys.argv.index("--days") + 1]) if "--days" in sys.argv else 2
             cli.remind(account, live="--live" in sys.argv[3:], after_days=days)
@@ -131,7 +128,7 @@ def main() -> None:
         else:
             cli.run(account, live="--live" in sys.argv[3:], any_time="--any-time" in sys.argv[3:])
     else:
-        raise SystemExit("Usage: jobpilot [run|login|web|db-info|feeds-check|interviews-import|hh-login|hh-search|hh-run|hh-remind|hh-export|hh-refresh|hh-explain|hh-dump|hh-chats|hh-chats-dump] [account]")
+        raise SystemExit("Usage: jobpilot [run|login|web|db-info|feeds-check|interviews-import|hh-auth|hh-whoami|hh-search|hh-run|hh-remind|hh-refresh|hh-explain|hh-chats] [account]")
 
 
 if __name__ == "__main__":

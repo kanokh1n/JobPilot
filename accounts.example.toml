@@ -14,6 +14,7 @@ start_limit = 20
 max_limit = 40
 ramp_step = 5
 per_pass = 8  # applications per hourly pass, so the day's quota is spread out
+search_every_hours = 3  # load the search pages this often, passes in between reuse the list
 # extra hh search params; remote-only by default, drop it if you also accept relocation
 search_params = { work_format = "REMOTE" }
 
@@ -27,4 +28,5 @@ start_limit = 20
 max_limit = 40
 ramp_step = 5
 per_pass = 8  # applications per hourly pass, so the day's quota is spread out
+search_every_hours = 3  # load the search pages this often, passes in between reuse the list
 search_params = { work_format = "REMOTE" }

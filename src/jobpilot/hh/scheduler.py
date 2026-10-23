@@ -12,17 +12,16 @@ from ..db import Database
 from ..tg.notifier import Notifier
 from .accounts import load_accounts, paused, with_overrides
 from .apply import CaptchaError, prune_screenshots
-from .browsers import SharedBrowsers
 from .chats import SyncSummary, sync_chats
-from .followup import refresh_resumes, remind_pass
+from .client import HHClients
+from .followup import remind_pass
 from .live import LIVE_HOURS, ChatWatcher, live_on, send_pending
 from .pipeline import apply_pass, captcha_hold, record_captcha
-from .search import WebSearch
 
 log = logging.getLogger(__name__)
 
-# Apply, reminder and resume passes of the two accounts never run at the same time (one IP, small server).
-# Chats and replies do not wait for them: they share the account's open browser (SharedBrowsers).
+# Apply, reminder and resume passes of the two accounts never run at the same time (one IP).
+# Chats and replies do not wait for them.
 _pass_lock = asyncio.Lock()
 _watchers: list[asyncio.Task] = []  # keep references to the watcher tasks while they run
 
@@ -51,10 +50,17 @@ def schedule_hh(scheduler: AsyncIOScheduler, cfg: Config, db: Database, notifier
     if not cfg.accounts_path.exists():
         log.info("no %s, hh part is off", cfg.accounts_path)
         return
-    browsers = SharedBrowsers(cfg.data_dir)
+    clients = HHClients(cfg.data_dir)
+
+    def signed_in(account: str) -> bool:
+        """Without `jobpilot hh-auth` there is no token: the account's jobs wait quietly."""
+        if clients.get(account).signed_in:
+            return True
+        log.warning("hh/%s is not signed in: run jobpilot hh-auth %s <phone>", account, account)
+        return False
 
     def watching() -> bool:
-        """Whether the chat watchers may keep hh.ru/chat open now."""
+        """Whether the chat watchers may poll the chats now."""
         return (live_on(db) and db.get("paused") != "1" and _captcha_now(db, cfg) is None
                 and datetime.now(ZoneInfo(cfg.tz)).hour in LIVE_HOURS)
 
@@ -74,7 +80,7 @@ def schedule_hh(scheduler: AsyncIOScheduler, cfg: Config, db: Database, notifier
         if not db.outbox_pending() or _captcha_now(db, cfg):
             return
         sent = await send_pending(
-            db, browsers, may_send=lambda: _captcha_now(db, cfg) is None, notify=notifier.say,
+            db, clients, may_send=lambda: _captcha_now(db, cfg) is None, notify=notifier.say,
             on_captcha=lambda account: on_captcha(account, "при отправке ответа"),
         )
         if sent:
@@ -87,19 +93,19 @@ def schedule_hh(scheduler: AsyncIOScheduler, cfg: Config, db: Database, notifier
     scheduler.add_job(prune_job, "cron", hour=4, minute=0, id="hh-prune-screenshots", replace_existing=True)
     for number, account in enumerate(load_accounts(cfg.accounts_path).values()):
         async def apply_job(base=account) -> None:
-            if _on_hold(db, cfg, f"apply/{base.name}", base.name):
+            if _on_hold(db, cfg, f"apply/{base.name}", base.name) or not signed_in(base.name):
                 return
             account = with_overrides(base, db)  # limits and words changed on the site apply from the next pass
+            client = clients.get(account.name)
             async with _pass_lock:
                 try:
-                    async with browsers.use(account.name) as browser:
-                        browser.last_captcha_shot = None  # the browser may have been open for hours
-                        summary = await apply_pass(
-                            db=db, account=account, search=WebSearch(browser), browser=browser,
-                            letters_dir=cfg.data_dir / "letters", tz=cfg.tz, live=True,
-                            notify=lambda text: asyncio.get_running_loop().create_task(notifier.say(text)),
-                        )
-                        captcha_shot = browser.last_captcha_shot
+                    client.last_captcha_shot = None
+                    summary = await apply_pass(
+                        db=db, account=account, search=client, client=client,
+                        letters_dir=cfg.data_dir / "letters", tz=cfg.tz, live=True,
+                        notify=lambda text: asyncio.get_running_loop().create_task(notifier.say(text)),
+                    )
+                    captcha_shot = client.last_captcha_shot
                 except Exception:
                     log.exception("hh apply pass failed for %s", account.name)
                     await notifier.say(f"hh/{account.name}: проход упал, подробности в логе сервера")
@@ -115,15 +121,17 @@ def schedule_hh(scheduler: AsyncIOScheduler, cfg: Config, db: Database, notifier
                 await notifier.say(f"hh/{account.name}: откликов {summary.applied}, ошибок {summary.failed}")
 
         async def remind_job(account=account) -> None:
-            if _on_hold(db, cfg, f"remind/{account.name}", account.name):
+            if _on_hold(db, cfg, f"remind/{account.name}", account.name) or not signed_in(account.name):
                 return
             async with _pass_lock:
                 try:
-                    async with browsers.use(account.name) as browser:
-                        sent = await remind_pass(
-                            db, browser, account.name, live=True,
-                            notify=lambda text: asyncio.get_running_loop().create_task(notifier.say(text)),
-                        )
+                    sent = await remind_pass(
+                        db, clients.get(account.name), account.name, live=True,
+                        notify=lambda text: asyncio.get_running_loop().create_task(notifier.say(text)),
+                    )
+                except CaptchaError:
+                    await on_captcha(account.name, "при напоминаниях")
+                    return
                 except Exception:
                     log.exception("hh reminder pass failed for %s", account.name)
                     return
@@ -132,22 +140,23 @@ def schedule_hh(scheduler: AsyncIOScheduler, cfg: Config, db: Database, notifier
                 await notifier.say(f"hh/{account.name}: напоминаний отправлено {sent}")
 
         async def refresh_job(account=account) -> None:
-            if _on_hold(db, cfg, f"refresh/{account.name}"):
+            if _on_hold(db, cfg, f"refresh/{account.name}") or not signed_in(account.name):
                 return
             async with _pass_lock:
                 try:
-                    async with browsers.use(account.name) as browser:
-                        await refresh_resumes(browser)
+                    raised = await clients.get(account.name).raise_resumes()
+                    log.info("hh/%s resumes raised: %d", account.name, raised)
+                except CaptchaError:
+                    await on_captcha(account.name, "при поднятии резюме")
                 except Exception:
                     log.exception("hh resume refresh failed for %s", account.name)
 
         async def chats_job(account=account) -> None:
             """The hourly read, used only while the live watcher is switched off on the site."""
-            if live_on(db) or _on_hold(db, cfg, f"chats/{account.name}"):
+            if live_on(db) or _on_hold(db, cfg, f"chats/{account.name}") or not signed_in(account.name):
                 return
             try:
-                async with browsers.use(account.name) as browser:
-                    summary = await sync_chats(db, browser, account.name)
+                summary = await sync_chats(db, clients.get(account.name), account.name)
             except CaptchaError:
                 await on_captcha(account.name, "на странице чатов")
                 return
@@ -157,10 +166,10 @@ def schedule_hh(scheduler: AsyncIOScheduler, cfg: Config, db: Database, notifier
             await report_chats(account.name, summary)
 
         watcher = ChatWatcher(
-            db, browsers, account.name, may_run=watching,
+            db, clients.get(account.name), account.name,
+            may_run=lambda name=account.name: watching() and clients.get(name).signed_in,
             on_summary=lambda summary, name=account.name: report_chats(name, summary),
             on_captcha=lambda name=account.name: on_captcha(name, "на странице чатов"),
-            frames_log=cfg.data_dir / "dumps" / account.name / "ws_frames.txt",
         )
         _watchers.append(asyncio.get_running_loop().create_task(watcher.run(), name=f"hh-chats-live-{account.name}"))
 
