@@ -104,11 +104,20 @@ def test_sync_links_the_application_and_reads_only_changed_chats(tmp_path):
     answered = FakeClient({None: _listing([_item(1, "137", REPLY, unread=1, state="DISCARD")])},
                           {"1": _chat_data(1, [LETTER, REPLY])})
     s = _sync(db, answered)
-    assert s.new_messages == 1 and s.incoming == ["Вакансия 1 (Acme)"] and s.stages_moved == 1
+    assert s.new_messages == 1 and s.incoming == [] and s.stages_moved == 1  # a rejection is not announced
     assert db.application(app_id)["stage"] == stages.REJECTED
     assert [m["direction"] for m in db.chat_messages(chat["id"])] == ["out", "in"]
     assert db.chat(chat["id"])["unread"] == 1
     assert db.conn.execute("SELECT COUNT(*) FROM events WHERE kind = 'chat'").fetchone()[0] == 2
+
+
+def test_an_invitation_is_announced(tmp_path):
+    db = Database(tmp_path / "t.db")
+    _sync(db, FakeClient({None: _listing([_item(1, "137", LETTER)])}, {"1": _chat_data(1, [LETTER])}))
+    invite = {**REPLY, "text": "Приглашаем на интервью", "workflowTransition": {"applicantState": "INVITATION"}}
+    s = _sync(db, FakeClient({None: _listing([_item(1, "137", invite, unread=1, state="INVITATION")])},
+                             {"1": _chat_data(1, [LETTER, invite])}))
+    assert s.incoming == ["Вакансия 1 (Acme)"]
 
 
 def test_sync_reads_older_pages_while_they_change(tmp_path):

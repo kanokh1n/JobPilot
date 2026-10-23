@@ -42,7 +42,7 @@ def test_example_accounts_file_loads():
     accounts = load_accounts(Path(__file__).parent.parent / "accounts.example.toml")
     assert set(accounts) == {"php", "go"}
     assert accounts["go"].resumes["en"] == "Go Developer"
-    assert accounts["php"].search_params == {"work_format": "REMOTE"}
+    assert accounts["php"].search_params == {} and accounts["php"].recommended
     assert "golang" in accounts["go"].include and "junior" in accounts["go"].exclude
 
 
@@ -85,6 +85,9 @@ class FakeSearch:
         if self._captcha:
             raise CaptchaError("search")
         return self._vacancies
+
+    async def recommended(self, resume_title):
+        return []
 
 
 class FakeBrowser:
@@ -276,3 +279,19 @@ def test_hh_daily_limit_stops_without_recording(tmp_path):
     summary = _run(tmp_path, db, _vacancies(3), browser)
     assert summary.applied == 1 and summary.stopped == "hh daily limit" and len(browser.calls) == 2
     assert not db.hh_seen("go", "1")
+
+
+def test_recommended_vacancies_join_the_search(tmp_path):
+    from jobpilot.hh.pipeline import collect_candidates
+
+    class WithRecommended(FakeSearch):
+        titles = []
+
+        async def recommended(self, resume_title):
+            self.titles.append(resume_title)
+            return [vacancy(9, "Go developer 9"), vacancy(0, "Go developer 0")]
+
+    db = Database(tmp_path / "t.db")
+    search = WithRecommended(_vacancies(2))
+    found = asyncio.run(collect_candidates(search, ACCOUNT, db, NOON))
+    assert [v.id for v in found] == ["0", "1", "9"] and search.titles == ["Go-разработчик", "Go Developer"]

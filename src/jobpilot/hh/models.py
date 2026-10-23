@@ -18,6 +18,7 @@ class Account:
     search_every_hours: int = 3  # the search pages are loaded this often; passes in between reuse the list
     per_pass: int = 8  # at most this many applications per hourly pass, so a day's quota is spread out
     search_params: dict[str, str] = field(default_factory=dict)
+    recommended: bool = True  # also take the vacancies hh recommends for the account's resumes
 
 
 @dataclass(frozen=True)

@@ -32,6 +32,7 @@ def load_accounts(path: Path, db=None) -> dict[str, Account]:
             per_pass=item.get("per_pass", 8),
             search_every_hours=item.get("search_every_hours", 3),
             search_params={k: str(v) for k, v in item.get("search_params", {}).items()},
+            recommended=item.get("recommended", True),
         )
         accounts[account.name] = with_overrides(account, db) if db is not None else account
     return accounts

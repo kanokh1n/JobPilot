@@ -25,6 +25,8 @@ CHAT_STAGES = {
     "ASSESSMENT": stages.INVITATION,
     "HIRED": stages.OFFER,
 }
+# Chats in these states get no Telegram message about new employer messages.
+QUIET_STATES = {"DISCARD"}
 
 
 @dataclass
@@ -172,7 +174,8 @@ async def sync_chats(db: Database, client, account: str, max_pages: int = 3,
                                                        for m in messages])
         summary.updated += 1
         summary.new_messages += new
-        if incoming and stored is not None:  # not on the very first copy of a chat
+        # Not on the very first copy of a chat, and not for a rejection: its letter is no news worth a ping.
+        if incoming and stored is not None and chat.state not in QUIET_STATES:
             summary.incoming.append(f"{chat.title} ({chat.employer})")
         await sleep(random.uniform(1.5, 4))
     return summary

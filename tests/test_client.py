@@ -115,3 +115,11 @@ def test_raise_resumes_only_where_hh_allows():
     api = FakeApi({"/resumes/mine": RESUMES})
     assert asyncio.run(client(api).raise_resumes()) == 1
     assert ("POST", "/resumes/r1/publish", None) in api.calls
+
+
+def test_recommended_for_the_resume():
+    api = FakeApi({"/resumes/mine": RESUMES, "/resumes/r1/similar_vacancies": {"pages": 1, "items": [
+        {"id": "8", "name": "Go", "alternate_url": "u", "employer": {"name": "E"}, "snippet": {}},
+        {"id": "9", "name": "Go", "alternate_url": "u", "relations": ["got_response"]}]}})
+    found = asyncio.run(client(api).recommended("Go-разработчик"))
+    assert [v.id for v in found] == ["8"]

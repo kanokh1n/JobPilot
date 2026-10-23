@@ -117,6 +117,22 @@ class HHClient:
                 break
         return found
 
+    async def recommended(self, resume_title: str, max_pages: int = 2) -> list[Vacancy]:
+        """Vacancies hh recommends for the resume, filtered like the search."""
+        resume = await self.resume_id(resume_title)
+        if resume is None:
+            return []
+        found: list[Vacancy] = []
+        for page in range(max_pages):
+            data = await self.get(f"/resumes/{resume}/similar_vacancies", per_page=50, page=page)
+            for item in data.get("items") or []:
+                if item.get("archived") or item.get("relations") or item.get("response_url"):
+                    continue
+                found.append(parse_vacancy(item))
+            if page + 1 >= data.get("pages", 1):
+                break
+        return found
+
     async def resume_id(self, title: str) -> str | None:
         """Id of the published resume with this title (case does not matter)."""
         if title.lower() not in self._resume_ids:

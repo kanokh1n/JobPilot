@@ -106,6 +106,10 @@ async def collect_candidates(search, account: Account, db: Database, now: dateti
         for query in account.queries:
             for vacancy in await search.search(query, params=account.search_params, period_days=account.search_period):
                 unique.setdefault(vacancy.id, vacancy)
+        if account.recommended:
+            for title in dict.fromkeys(account.resumes.values()):
+                for vacancy in await search.recommended(title):
+                    unique.setdefault(vacancy.id, vacancy)
         found = list(unique.values())
         db.set(f"hh_search_cache:{account.name}",
                json.dumps({"at": now.isoformat(), "vacancies": [asdict(v) for v in found]}, ensure_ascii=False))
