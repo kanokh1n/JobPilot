@@ -316,12 +316,15 @@ class Database:
 
     # --- hh.ru applications ---
 
-    def _hh_id(self, account: str, vacancy_id: str) -> int | None:
+    def _app_id(self, source: str, account: str, vacancy_id: str) -> int | None:
         row = self._conn.execute(
-            "SELECT id FROM applications WHERE source = 'hh' AND account = ? AND vacancy_id = ?",
-            (account, vacancy_id),
+            "SELECT id FROM applications WHERE source = ? AND account = ? AND vacancy_id = ?",
+            (source, account, vacancy_id),
         ).fetchone()
         return row["id"] if row else None
+
+    def _hh_id(self, account: str, vacancy_id: str) -> int | None:
+        return self._app_id("hh", account, vacancy_id)
 
     def hh_seen(self, account: str, vacancy_id: str) -> bool:
         return self._hh_id(account, vacancy_id) is not None
@@ -335,20 +338,34 @@ class Database:
 
     def hh_record(self, account: str, vacancy_id: str, name: str, employer: str, url: str,
                   resume_lang: str, letter: str, status: str, now: datetime | None = None) -> None:
+        self.app_record("hh", account, vacancy_id, name, employer, url, resume_lang, letter, status, now)
+
+    def app_record(self, source: str, account: str, vacancy_id: str, name: str, employer: str, url: str,
+                   resume_lang: str, letter: str, status: str, now: datetime | None = None) -> int:
+        """An application the worker sent (or a vacancy it skipped) on hh or another site with an API."""
         at = (now or datetime.now(timezone.utc)).isoformat()
         self._conn.execute(
             "INSERT INTO applications"
             " (source, account, vacancy_id, name, employer, url, resume_lang, letter, status, applied_at, updated_at)"
-            " VALUES ('hh', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             " ON CONFLICT (source, account, vacancy_id) DO UPDATE SET"
             " name = excluded.name, employer = excluded.employer, url = excluded.url,"
             " resume_lang = excluded.resume_lang, letter = excluded.letter, status = excluded.status,"
             " applied_at = excluded.applied_at, updated_at = excluded.updated_at",
-            (account, vacancy_id, name, employer, url, resume_lang, letter, status, at, _now()),
+            (source, account, vacancy_id, name, employer, url, resume_lang, letter, status, at, _now()),
         )
-        app_id = self._hh_id(account, vacancy_id)
+        app_id = self._app_id(source, account, vacancy_id)
         self.event("application", account, app_id, status=status)
         self.suggest_stage(app_id, stages.stage_for_status(status))
+        return app_id
+
+    def app_applied_since(self, source: str, account: str, since: datetime) -> int:
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM applications"
+            " WHERE source = ? AND account = ? AND status = 'applied' AND applied_at >= ?",
+            (source, account, since.isoformat()),
+        ).fetchone()
+        return row["n"]
 
     def hh_applied_since(self, account: str, since: datetime) -> int:
         row = self._conn.execute(
@@ -485,7 +502,7 @@ class Database:
         """Replies waiting to go out, oldest first, with the hh id of their chat."""
         return self._conn.execute(
             "SELECT o.*, c.external_id, c.title FROM outbox o JOIN chats c ON c.id = o.chat_id"
-            " WHERE o.status = 'pending' ORDER BY o.id"
+            " WHERE o.status = 'pending' AND c.source = 'hh' ORDER BY o.id"
         ).fetchall()
 
     def outbox_mark(self, outbox_id: int, status: str, error: str | None = None) -> None:

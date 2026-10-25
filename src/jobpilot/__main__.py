@@ -10,6 +10,7 @@ from .config import Config
 from .db import Database
 from .feeds.scheduler import schedule_feeds
 from .hh.scheduler import schedule_hh
+from .hirify.scheduler import schedule_hirify
 from .tg.bot import build_dispatcher, create_bot
 from .tg.notifier import Notifier
 from .tg.sources import DIGEST_REQUEST
@@ -63,6 +64,7 @@ async def run() -> None:
         raise SystemExit("Userbot is not signed in. Run: jobpilot login")
     refresh_task = await start_listening(client, cfg, db, notifier)  # keep a reference while running
     schedule_hh(scheduler, cfg, db, notifier)
+    schedule_hirify(scheduler, cfg, db, notifier)
     schedule_feeds(scheduler, cfg, db, notifier)
 
     await asyncio.gather(dp.start_polling(bot), client.run_until_disconnected())

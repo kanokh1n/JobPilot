@@ -77,6 +77,16 @@ only go out 09:00-21:00 local time with a 1-3 minute pause between them, a captc
 a row stop the account, and hh's own daily limit ends the pass. On a captcha the worker does not solve it:
 the picture goes to Telegram and both accounts rest 3, then 12, then 24 hours.
 
+## Hirify
+
+With `HIRIFY_API_KEY` in `.env` (hirify.me/mcp-api, API) the worker reads Hirify vacancies every hour from
+9:15 to 20:15 through the Agent API (`hirify/`). The filter is the setting `hirify_filter` (a query string from
+Hirify's filter guide; by default Go backend anywhere). Where Hirify takes the
+application itself (`can_apply_directly`), it applies with the first Hirify profile and the letter
+`data/letters/hirify_en.txt` (or `go_en.txt`), at most 10 a pass and 100 a day (Hirify's own daily allowance); titles with the go account's
+exclude words are skipped. Every other vacancy goes to the site's Hirify tab and to Telegram like a feed item; up to 10 a pass get their contact revealed (Telegram, e-mail or form, 100 a day at Hirify), and the link then leads there.
+The first pass only fills the site.
+
 ## Site (v3)
 
 `jobpilot web` serves a small site over the same database: an overview of both accounts
