@@ -19,6 +19,13 @@ def _has_word(text: str, keyword: str) -> bool:
     return re.search(pattern, _norm(text)) is not None
 
 
+LEAD_WORDS = ("lead", "teamlead", "techlead", "лид", "тимлид", "техлид")
+
+
+def is_lead(title: str) -> bool:
+    return any(_has_word(title, word) for word in LEAD_WORDS)
+
+
 @dataclass
 class Filters:
     include: list[str] = field(default_factory=list)

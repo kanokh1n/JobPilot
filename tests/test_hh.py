@@ -116,6 +116,8 @@ def test_keyword_rules_from_the_user():
     assert not matches(ACCOUNT, vacancy(5, "Стажёр Go"))  # ё equals е
     assert not matches(ACCOUNT, vacancy(6, "Джуниор Golang разработчик"))
     assert not matches(ACCOUNT, vacancy(7, "Java Developer", "Google Cloud"))  # "go" is not inside "Google"
+    assert not matches(ACCOUNT, vacancy(8, "Team Lead Go"))
+    assert matches(ACCOUNT, vacancy(9, "Go developer", "Работа в команде с тимлидом"))  # lead only counts in the title
 
 
 def test_letter_template_per_account_overrides_shared(tmp_path):

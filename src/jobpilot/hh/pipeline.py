@@ -10,7 +10,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from ..db import Database
-from ..filters import Filters, _has_word
+from ..filters import Filters, _has_word, is_lead
 from .apply import ApplyResult, CaptchaError
 from .letter import load_template, render_letter
 from .limits import can_apply, captcha_cooldown_hours, daily_limit, pause_seconds, short_pause_seconds
@@ -41,6 +41,8 @@ def reject_reason(account: Account, vacancy: Vacancy) -> str | None:
     for name in account.exclude_employers:
         if _has_word(vacancy.employer, name):
             return f"employer {name!r}"
+    if is_lead(vacancy.name):
+        return "lead position"
     text = f"{vacancy.name}\n{vacancy.snippet}"
     for word in account.exclude:
         if _has_word(text, word):

@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 
 from ..core.db import Database, FeedJob
 from ..feeds.parse import FeedItem, job_hash
-from ..filters import _has_word
+from ..filters import _has_word, is_lead
 from ..hh.limits import in_working_hours
 from .client import SITE_URL, HirifyClient, HirifyError
 
@@ -43,7 +43,8 @@ class Settings:
     per_pass: int = 10
     reveals_per_pass: int = 10      # contacts revealed for the vacancies we do not apply to (100 a day at Hirify)
     exclude: tuple[str, ...] = ()   # words in the title that skip a vacancy (the go account's exclude list)
-    pages: int = 10
+    pages: int = 50
+    news_pages: int = 10            # vacancies found deeper are old: they go to the site, not to Telegram
 
     @classmethod
     def from_db(cls, db: Database, exclude: tuple[str, ...] = ()) -> "Settings":
@@ -58,6 +59,7 @@ class Settings:
 class Summary:
     applied: int = 0
     listed: list[FeedJob] = field(default_factory=list)  # new vacancies to apply to by hand
+    archived: list[FeedJob] = field(default_factory=list)  # listed ones from beyond the news pages
     revealed: int = 0
     skipped: int = 0
     failed: int = 0
@@ -77,6 +79,8 @@ def known(db: Database, vacancy_id: str) -> bool:
 
 
 def excluded(settings: Settings, card: dict) -> str | None:
+    if is_lead(card.get("title") or ""):
+        return "lead"
     for word in settings.exclude:
         if _has_word(card.get("title") or "", word):
             return word
@@ -126,14 +130,14 @@ async def hirify_pass(db: Database, client: HirifyClient, settings: Settings, le
             may_apply, summary.stopped = False, "hirify quota"
 
     reveals = settings.reveals_per_pass if live else 0
-    cards: list[dict] = []
+    cards: list[tuple[int, dict]] = []
     for page in range(1, settings.pages + 1):
         found, meta = await client.search(settings.filter, page=page)
-        cards += found
+        cards += [(page, card) for card in found]
         if page >= int(meta.get("last_page") or 1):
             break
 
-    for card in cards:
+    for page, card in cards:
         vacancy_id = str(card["vacancy_id"])
         direct = bool(card.get("can_apply_directly"))
         # A vacancy Hirify takes applications for stays a candidate until we applied: when the limits of a pass
@@ -167,7 +171,7 @@ async def hirify_pass(db: Database, client: HirifyClient, settings: Settings, le
             job = db.add_feed_job(SOURCE, COUNTRY, _item(card, company, contacts),
                                   job_hash(card.get("title") or "", vacancy_id), True)
             if job is not None:
-                summary.listed.append(job)
+                (summary.listed if page <= settings.news_pages else summary.archived).append(job)
             continue
         try:
             detail = await client.vacancy(vacancy_id)

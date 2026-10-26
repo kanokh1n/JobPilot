@@ -1,4 +1,4 @@
-from jobpilot.filters import Filters, split_keywords, text_hash
+from jobpilot.filters import Filters, is_lead, split_keywords, text_hash
 
 VACANCY = "Ищем PHP разработчика в команду. Laravel, PostgreSQL, удалённо, оформление по контракту."
 
@@ -40,3 +40,11 @@ def test_yo_equals_ye():
 def test_multiword_keyword():
     text = "Ищем разработчика на Go Lang в команду платежей, удалённо, оформление по контракту, зарплата обсуждается."
     assert Filters(include=["go lang"]).match(text)
+
+
+def test_lead_titles():
+    for title in ("Team Lead PHP", "Tech Lead (Go)", "Lead Golang Developer", "Teamlead", "Тимлид PHP",
+                  "Техлид Go", "Лид-разработчик Go", "Team-lead backend"):
+        assert is_lead(title), title
+    for title in ("Senior PHP Developer", "Go developer (leading fintech)", "Backend Go, Lidl"):
+        assert not is_lead(title), title

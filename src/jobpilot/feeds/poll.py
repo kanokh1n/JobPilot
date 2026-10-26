@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 
 from ..core.db import Database, FeedJob
-from ..filters import Filters
+from ..filters import Filters, is_lead
 from . import sources as feed_sources
 from .parse import MAX_BYTES, FeedError, FeedItem, job_hash, parse
 from .sources import Source
@@ -44,7 +44,7 @@ def feed_filters(db: Database) -> Filters:
 def matches(filters: Filters, item: FeedItem) -> bool:
     """Words are looked for in the title and the categories only: in English descriptions "go" is
     mostly the verb, and "junior" turns up in senior jobs ("mentor juniors")."""
-    return filters.match(" \n".join([item.title, *item.categories]))
+    return not is_lead(item.title) and filters.match(" \n".join([item.title, *item.categories]))
 
 
 def _parse_time(value: str | None) -> datetime | None:

@@ -45,13 +45,16 @@ def schedule_hirify(scheduler: AsyncIOScheduler, cfg: Config, db: Database, noti
             log.exception("hirify pass failed")
             await notifier.say("Hirify: проход упал, подробности в логе сервера")
             return
-        log.info("hirify pass: applied=%d listed=%d revealed=%d skipped=%d failed=%d stopped=%s", summary.applied,
-                 len(summary.listed), summary.revealed, summary.skipped, summary.failed, summary.stopped)
+        log.info("hirify pass: applied=%d listed=%d archived=%d revealed=%d skipped=%d failed=%d stopped=%s",
+                 summary.applied, len(summary.listed), len(summary.archived), summary.revealed, summary.skipped,
+                 summary.failed, summary.stopped)
+        db.feed_mark_sent([job.id for job in summary.archived])
         if summary.applied or summary.failed:
             await notifier.say(f"Hirify: откликов {summary.applied}, ошибок {summary.failed}")
         if first:  # the whole current list is no news: it goes to the site, not to Telegram
             db.feed_mark_sent([job.id for job in summary.listed])
-            await notifier.say(f"Hirify подключён: {len(summary.listed)} вакансий на сайте, вкладка Hirify")
+            await notifier.say(f"Hirify подключён: {len(summary.listed) + len(summary.archived)} вакансий на сайте,"
+                               " вкладка Hirify")
             return
         await notifier.feed_jobs_found(summary.listed, FEED_NAME)
 

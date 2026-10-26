@@ -117,3 +117,21 @@ def test_a_listed_vacancy_applied_to_by_hand_is_left_alone(tmp_path):
     job_id = db.conn.execute("SELECT id FROM feed_jobs WHERE source = 'hirify'").fetchone()[0]
     db.add_manual_application("feed", "hirify", str(job_id), "Senior Go Developer", "", "u")
     assert run(db, FakeHirify([card(1)])).applied == 0
+
+
+class PagedHirify(FakeHirify):
+    def __init__(self, pages, **kw):
+        super().__init__([], **kw)
+        self.pages = pages
+
+    async def search(self, filter_query, page=1, per_page=50):
+        return self.pages[page - 1], {"last_page": len(self.pages)}
+
+
+def test_vacancies_beyond_the_news_pages_are_listed_quietly(tmp_path):
+    db = Database(tmp_path / "t.db")
+    client = PagedHirify([[card(1, "Go 1", direct=False)], [card(2, "Go 2", direct=False)],
+                          [card(3), card(4, "Go 4", direct=False)]])
+    s = run(db, client, Settings(profile_id=1, news_pages=2))
+    assert [j.title for j in s.listed] == ["Go 1", "Go 2"] and [j.title for j in s.archived] == ["Go 4"]
+    assert s.applied == 1 and client.applied[0][0] == "3-go"  # direct vacancies deep in the list still get applied to
