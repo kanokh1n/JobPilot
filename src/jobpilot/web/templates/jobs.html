@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import hold_banner, pill, stage_select %}
+{% from "_macros.html" import hold_banner, hh_switches, pill, stage_select %}
 {% block title %}{{ tab.label if tab.key else 'Вакансии' }} · JobPilot{% endblock %}
 {% block body %}
 {{ hold_banner(hold) }}
@@ -25,6 +25,7 @@
   <div><b>{{ sm.s.answer_rate }}%</b><span class="cap">ответили ({{ sm.s.answered }})</span></div>
   <p class="muted small">резюме {{ hold.resume_lang | upper }}{% if sm.per_pass %} · до {{ sm.per_pass }} за проход{% endif %}{% if sm.paused %} · <b>отклики на паузе</b>{% endif %}
     {% if sm.configured %}<br><a href="/settings/hh/{{ tab.key }}">лимиты и слова →</a>{% endif %}</p>
+  {% if sm.configured and not hold.paused %}{{ hh_switches(hold) }}{% endif %}
 </div>
 {% elif tab.kind == 'tg' %}
 <div class="nums">

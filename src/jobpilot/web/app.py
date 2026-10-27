@@ -211,7 +211,8 @@ def _hold(site: Site) -> dict:
     until = captcha_hold(site.db, datetime.now(timezone.utc))
     return {"paused": site.db.get("paused") == "1", "captcha_until": until.isoformat() if until else None,
             "resume_lang": site.db.get("resume_lang", "ru"), "chats_live": live_on(site.db),
-            "accounts_paused": [n for n in site.configured_accounts() if hh_accounts.paused(site.db, n)]}
+            "accounts_paused": [n for n in site.configured_accounts() if hh_accounts.paused(site.db, n)],
+            "hh_off": hh_accounts.hh_off(site.db), "hh_apply_paused": hh_accounts.apply_paused(site.db)}
 
 
 def _attention(site: Site) -> list[dict]:
@@ -782,6 +783,10 @@ async def api_settings(request: web.Request) -> web.Response:
     body = await _json_body(request)
     if "paused" in body:
         db.set("paused", "1" if _flag(body["paused"]) else "0")
+    if "hh_off" in body:
+        db.set(hh_accounts.HH_OFF, "1" if _flag(body["hh_off"]) else "0")
+    if "hh_apply_paused" in body:
+        db.set(hh_accounts.APPLY_PAUSED, "1" if _flag(body["hh_apply_paused"]) else "0")
     if "chats_live" in body:
         db.set(LIVE_KEY, "1" if _flag(body["chats_live"]) else "0")
     if "resume_lang" in body:

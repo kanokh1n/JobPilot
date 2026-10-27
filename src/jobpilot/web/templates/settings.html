@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import hold_banner %}
+{% from "_macros.html" import hold_banner, hh_switches %}
 {% block title %}Настройки · JobPilot{% endblock %}
 {% block body %}
 {% set titles = {'general': 'Общее', 'captcha': 'Капча hh', 'telegram': 'Телеграм', 'feeds': 'Ленты сайтов'} %}
@@ -18,6 +18,15 @@
   <div class="sections">
 {% if section == 'general' %}
 <p class="muted small">Бот и hh-воркер читают эти настройки сами: лимиты и слова действуют со следующего прохода, режим и паузы сразу. Перезапуск не нужен.</p>
+  {% if account_names %}
+  <section class="panel">
+    <h3>hh</h3>
+    <p class="muted small">«Пауза откликов» останавливает отклики и напоминания на всех аккаунтах, чаты читаются дальше. «Выключить hh» останавливает весь hh: отклики, напоминания, поднятие резюме, чтение чатов и отправку ответов. Данные на сайте остаются, снять можно в любой момент.</p>
+    <p>Сейчас: <b>{% if hold.hh_off %}hh выключен{% elif hold.hh_apply_paused %}отклики на паузе{% else %}работает{% endif %}</b></p>
+    <p class="error" hidden></p>
+    {{ hh_switches(hold) }}
+  </section>
+  {% endif %}
   <form class="panel form" data-api="/api/settings">
     <h3>Общее</h3>
     <label class="check"><input type="checkbox" name="paused" {% if hold.paused %}checked{% endif %}> Пауза всего: отклики hh, напоминания и Телеграм <span class="muted small">(как /pause в боте)</span></label>

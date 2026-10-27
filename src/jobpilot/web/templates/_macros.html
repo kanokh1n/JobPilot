@@ -5,7 +5,20 @@
 {% macro hold_banner(hold) -%}
 {% if hold.paused %}<div class="banner warn">Всё на паузе: отклики hh и Телеграм. Снять: <a href="/settings">Настройки</a> или /unpause в боте.</div>{% endif %}
 {% if hold.captcha_until %}<div class="banner bad">hh показал капчу: отклики стоят до {{ hold.captcha_until | local }}. Снять раньше: <a href="/settings/captcha">Настройки</a> или /hh_resume в боте.</div>{% endif %}
-{% if hold.accounts_paused and not hold.paused %}<div class="banner warn">На паузе отклики аккаунтов: {{ hold.accounts_paused | join(', ') }} (<a href="/settings">Настройки</a>).</div>{% endif %}
+{% if hold.hh_off and not hold.paused %}<div class="banner warn">hh выключен: отклики, напоминания, поднятие резюме, чтение чатов и ответы стоят. Всё уже собранное видно как обычно. <button type="button" class="ghost" data-post="/api/settings" data-body='{"hh_off": false}'>Включить hh</button></div>
+{% elif hold.hh_apply_paused and not hold.paused %}<div class="banner warn">Отклики hh на паузе у всех аккаунтов: новые отклики и напоминания не уходят, чаты читаются. <button type="button" class="ghost" data-post="/api/settings" data-body='{"hh_apply_paused": false}'>Возобновить отклики</button></div>
+{% elif hold.accounts_paused and not hold.paused %}<div class="banner warn">На паузе отклики аккаунтов: {{ hold.accounts_paused | join(', ') }} (<a href="/settings">Настройки</a>).</div>{% endif %}
+{%- endmacro %}
+
+{% macro hh_switches(hold) -%}
+<div class="actions hh-switch">
+  {% if hold.hh_off %}<button type="button" class="ghost on" data-post="/api/settings" data-body='{"hh_off": false}'>Включить hh</button>
+  {% else %}
+  {% if hold.hh_apply_paused %}<button type="button" class="ghost on" data-post="/api/settings" data-body='{"hh_apply_paused": false}'>Возобновить отклики</button>
+  {% else %}<button type="button" class="ghost" data-post="/api/settings" data-body='{"hh_apply_paused": true}'>Пауза откликов</button>{% endif %}
+  <button type="button" class="ghost danger" data-post="/api/settings" data-body='{"hh_off": true}' data-confirm="Выключить весь hh: отклики, напоминания, чаты и ответы?">Выключить hh</button>
+  {% endif %}
+</div>
 {%- endmacro %}
 
 {% macro funnel(s) -%}

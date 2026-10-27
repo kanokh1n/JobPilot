@@ -1,7 +1,8 @@
 {% extends "base.html" %}
-{% from "_macros.html" import pill, thread, stage_select %}
+{% from "_macros.html" import hold_banner, pill, thread, stage_select %}
 {% block title %}{{ (chat.title ~ ' · ') if chat else '' }}Чаты · JobPilot{% endblock %}
 {% block body %}
+{% if hold.hh_off %}{{ hold_banner(hold) }}{% endif %}
 <div class="chats {{ 'has-open' if chat else '' }}">
   <aside class="chat-list">
     <form class="filters" method="get" action="/chats">
@@ -60,7 +61,7 @@
         <div class="text">{{ o.text }}</div>
         <div class="meta small">
           {% if o.status == 'pending' %}
-            {% if hold.captcha_until %}ждёт конца паузы из-за капчи ({{ hold.captcha_until | local }}){% else %}отправляется…{% endif %}
+            {% if hold.hh_off %}ждёт, пока hh снова включат{% elif hold.captcha_until %}ждёт конца паузы из-за капчи ({{ hold.captcha_until | local }}){% else %}отправляется…{% endif %}
             · <button type="button" class="link" data-post="/api/outbox/{{ o.id }}/delete" data-confirm="Не отправлять этот ответ?">отменить</button>
           {% elif o.status == 'error' %}
             не ушло: {{ o.error }}. Проверьте чат на hh, прежде чем повторять, вдруг всё же дошло.

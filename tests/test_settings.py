@@ -160,3 +160,43 @@ def test_scheduler_respects_account_pause(tmp_path):
     hh_accounts.set_paused(site.db, "php", True)
     assert _on_hold(site.db, Cfg, "apply/php", "php")
     assert not _on_hold(site.db, Cfg, "chats/php")  # chats keep being read
+
+
+def test_scheduler_respects_hh_switches(tmp_path):
+    from jobpilot.hh.scheduler import _on_hold
+
+    site = _site(tmp_path)
+
+    class Cfg:
+        tz = "Asia/Yerevan"
+
+    site.db.set(hh_accounts.APPLY_PAUSED, "1")
+    assert _on_hold(site.db, Cfg, "apply/php", "php") and _on_hold(site.db, Cfg, "remind/php", "php")
+    assert not _on_hold(site.db, Cfg, "chats/php") and not _on_hold(site.db, Cfg, "refresh/php")
+    site.db.set(hh_accounts.APPLY_PAUSED, "0")
+    site.db.set(hh_accounts.HH_OFF, "1")
+    assert _on_hold(site.db, Cfg, "apply/php", "php") and _on_hold(site.db, Cfg, "chats/php")
+    assert _on_hold(site.db, Cfg, "refresh/php")
+
+
+def test_hh_switches_from_the_site(tmp_path):
+    async def scenario(client, db, site):
+        text = await (await client.get("/settings")).text()
+        assert "Пауза откликов" in text and "Выключить hh" in text
+        assert "Пауза откликов" in await (await client.get("/jobs?src=php")).text()
+
+        assert (await client.post("/api/settings", json={"hh_apply_paused": True})).status == 200
+        assert hh_accounts.apply_paused(db) and not hh_accounts.hh_off(db)
+        assert "Отклики hh на паузе у всех аккаунтов" in await (await client.get("/")).text()
+
+        assert (await client.post("/api/settings", json={"hh_off": True})).status == 200
+        assert hh_accounts.hh_off(db)
+        for page in ("/", "/jobs?src=php", "/chats", "/settings"):
+            text = await (await client.get(page)).text()
+            assert "hh выключен" in text and "Включить hh" in text, page
+
+        assert (await client.post("/api/settings", json={"hh_off": False, "hh_apply_paused": False})).status == 200
+        assert not hh_accounts.hh_off(db) and not hh_accounts.apply_paused(db)
+        assert "hh выключен" not in await (await client.get("/")).text()
+
+    _run(tmp_path, scenario)

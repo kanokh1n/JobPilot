@@ -81,3 +81,17 @@ def paused(db, name: str) -> bool:
 
 def set_paused(db, name: str, value: bool) -> None:
     db.set(f"hh_paused:{name}", "1" if value else "0")
+
+
+HH_OFF = "hh_off"                  # the whole hh part: applications, reminders, resumes, chats, replies
+APPLY_PAUSED = "hh_apply_paused"   # applications and reminders of every account; chats keep running
+
+
+def hh_off(db) -> bool:
+    """Everything hh is stopped from the site; the data stays readable."""
+    return db.get(HH_OFF) == "1"
+
+
+def apply_paused(db) -> bool:
+    """Applications and reminders of all accounts are stopped from the site."""
+    return db.get(APPLY_PAUSED) == "1"

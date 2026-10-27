@@ -374,3 +374,5 @@ pre.letter { white-space: pre-wrap; font: inherit; background: var(--soft); padd
 @media (prefers-reduced-motion: no-preference) {
   .tabs a, .chips a, button, .side a { transition: color .15s, border-color .15s, background-color .15s; }
 }
+.banner .ghost { margin-left: 8px; padding: 3px 10px; }
+.hh-switch { margin-top: 10px; }

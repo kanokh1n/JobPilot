@@ -10,7 +10,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from ..config import Config
 from ..db import Database
 from ..tg.notifier import Notifier
-from .accounts import load_accounts, paused, with_overrides
+from .accounts import apply_paused, hh_off, load_accounts, paused, with_overrides
 from .apply import CaptchaError, prune_screenshots
 from .chats import SyncSummary, sync_chats
 from .client import HHClients
@@ -27,12 +27,12 @@ _watchers: list[asyncio.Task] = []  # keep references to the watcher tasks while
 
 
 def _on_hold(db: Database, cfg: Config, job: str, account: str | None = None) -> bool:
-    """Skip every hh job while the paused flag or a captcha cooldown is on.
+    """Skip every hh job while the paused flag, the site's "hh off" switch or a captcha cooldown is on.
 
-    With `account`, the job also stops while that account is paused on the site (applications and
-    reminders; chats and resume raises keep running).
+    With `account`, the job also stops while applications are paused on the site, for all accounts
+    or for this one (applications and reminders; chats and resume raises keep running).
     """
-    if db.get("paused") == "1" or (account and paused(db, account)):
+    if db.get("paused") == "1" or hh_off(db) or (account and (apply_paused(db) or paused(db, account))):
         return True
     until = captcha_hold(db, datetime.now(ZoneInfo(cfg.tz)))
     if until:
@@ -61,7 +61,7 @@ def schedule_hh(scheduler: AsyncIOScheduler, cfg: Config, db: Database, notifier
 
     def watching() -> bool:
         """Whether the chat watchers may poll the chats now."""
-        return (live_on(db) and db.get("paused") != "1" and _captcha_now(db, cfg) is None
+        return (live_on(db) and db.get("paused") != "1" and not hh_off(db) and _captcha_now(db, cfg) is None
                 and datetime.now(ZoneInfo(cfg.tz)).hour in LIVE_HOURS)
 
     async def on_captcha(account: str, where: str) -> None:
@@ -76,11 +76,11 @@ def schedule_hh(scheduler: AsyncIOScheduler, cfg: Config, db: Database, notifier
                                + "\n".join(f"• {name}" for name in summary.incoming))
 
     async def outbox_job() -> None:
-        # Replies are typed by hand, so the paused flag does not hold them; a captcha cooldown does.
-        if not db.outbox_pending() or _captcha_now(db, cfg):
+        # Replies are typed by hand, so the paused flag does not hold them; "hh off" and a captcha cooldown do.
+        if hh_off(db) or not db.outbox_pending() or _captcha_now(db, cfg):
             return
         sent = await send_pending(
-            db, clients, may_send=lambda: _captcha_now(db, cfg) is None, notify=notifier.say,
+            db, clients, may_send=lambda: not hh_off(db) and _captcha_now(db, cfg) is None, notify=notifier.say,
             on_captcha=lambda account: on_captcha(account, "при отправке ответа"),
         )
         if sent:
